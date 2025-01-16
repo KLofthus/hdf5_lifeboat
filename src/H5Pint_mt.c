@@ -28,9 +28,7 @@
 /* Local Macros */
 /****************/
 
-#ifdef H5_HAVE_MULTITHREAD
-
-#define H5P_MT_DEBUG 0
+//#ifdef H5_HAVE_MULTITHREAD
 
 
 /******************/
@@ -44,8 +42,11 @@
 /********************/
 /* Local Prototypes */
 /********************/
-H5P_mt_class_t * H5P__create_class(H5P_mt_class_t *parent, uint64_t parent_version,
-                                   const char *name, H5P_plist_type_t type);
+H5P_mt_class_t * H5P__mt_create_class(H5P_mt_class_t *parent, uint64_t parent_version, 
+                                      const char *name, H5P_plist_type_t type);
+
+H5P_mt_prop_t * H5P__copy_lfsll(H5P_mt_prop_t *pl_head, uint64_t curr_version, 
+                                H5P_mt_class_t *new_class);
 
 int64_t H5P__calc_checksum(const char *name);
 
@@ -54,21 +55,23 @@ H5P_mt_prop_t *
                      bool in_prop_class, uint64_t create_version);
 
 herr_t H5P__insert_prop_class(H5P_mt_class_t *class, const char *name, 
-                              size_t size, void *value);
+                              void *value, size_t size);
 
-herr_t H5P__delete_prop_class(H5P_mt_prop_t *prop, H5P_mt_class_t *class);
+herr_t H5P__delete_prop_class(H5P_mt_class_t *class, H5P_mt_prop_t *prop);
 
-H5P_mt_prop_t * H5P__search_prop_class(H5P_mt_prop_t *target_prop, H5P_mt_class_t *class);
+H5P_mt_prop_t * H5P__search_prop_class(H5P_mt_class_t *class, 
+                                       H5P_mt_active_thread_count_t thrd,
+                                       H5P_mt_prop_t *prop);
 
 void H5P__find_mod_point(H5P_mt_class_t *class, H5P_mt_prop_t **first_ptr_ptr, 
                     H5P_mt_prop_t **second_ptr_ptr, int32_t *deletes_ptr, 
                     int32_t *nodes_visited_ptr, int32_t *thrd_cols_ptr,
-                    H5P_mt_prop_t *target_prop, int32_t cmp_result);
+                    H5P_mt_prop_t *target_prop, int32_t *cmp_result_ptr);
 
 
-herr_t H5P__insert_prop_list(H5P_mt_prop_t prop, H5P_mt_list_t list);
-herr_t H5P__delete_prop_list(H5P_mt_prop_t prop, H5P_mt_list_t list);
-H5P_mt_prop_t H5P__search_prop_list(H5P_mt_prop_t prop, H5P_mt_list_t list);
+//herr_t H5P__insert_prop_list(H5P_mt_prop_t prop, H5P_mt_list_t list);
+//herr_t H5P__delete_prop_list(H5P_mt_prop_t prop, H5P_mt_list_t list);
+//H5P_mt_prop_t H5P__search_prop_list(H5P_mt_prop_t prop, H5P_mt_list_t list);
 
 
 /*********************/
@@ -76,7 +79,8 @@ H5P_mt_prop_t H5P__search_prop_list(H5P_mt_prop_t prop, H5P_mt_list_t list);
 /*********************/
 
 hid_t           H5P_CLS_ROOT_ID_g = H5I_INVALID_HID;
-H5P_mt_class_t *H5P_mt_rootcls_g    = NULL;
+H5P_mt_class_t  *H5P_mt_rootcls_g = NULL;
+
 
 /*****************************/
 /* Library Private Variables */
@@ -103,51 +107,34 @@ H5P_mt_class_t *H5P_mt_rootcls_g    = NULL;
 herr_t
 H5P_init(void)
 {
-    H5P_mt_prop_t  * neg_sentinel;
-    H5P_mt_prop_t  * pos_sentinel;
+    H5P_mt_prop_t              * pos_sentinel;
+    H5P_mt_prop_aptr_t           pos_next;
+    H5P_mt_prop_value_t          pos_value;
+    H5P_mt_prop_t              * neg_sentinel;
+    H5P_mt_prop_aptr_t           neg_next;
+    H5P_mt_prop_value_t          neg_value;
+    H5P_mt_active_thread_count_t thrd;
+    H5P_mt_class_ref_counts_t    ref_count;
+    H5P_mt_class_sptr_t          fl_next;
 
-    H5P_mt_class_t * root_class;
 
     herr_t           ret_value = SUCCEED;
 
 
-    /* Allocating and initializing the two sentinel nodes for the LFSLL in the class */
-    neg_sentinel = (H5P_mt_prop_t *)malloc(sizeof(H5P_mt_prop_t));
-    if ( ! neg_sentinel )
-        printf(stderr, "\nNew property allocation failed."); 
-
-    /* Initalize property fields */
-    neg_sentinel->tag = H5P_MT_PROP_TAG;
-
-    atomic_store(&(neg_sentinel->next.ptr),     NULL);
-    atomic_store(&(neg_sentinel->next.deleted), FALSE);
-
-    neg_sentinel->sentinel      = TRUE;
-    neg_sentinel->in_prop_class = TRUE;
-
-    /* ref_count is only used if the property is in a property class. */
-    atomic_store(&(neg_sentinel->ref_count), 0);
-
-    neg_sentinel->chksum = LLONG_MIN;
-
-    neg_sentinel->name = (char *)"neg_sentinel";
-
-    atomic_store(&(neg_sentinel->value.ptr),  0);
-    atomic_store(&(neg_sentinel->value.size), 0);
-    
-    atomic_store(&(neg_sentinel->create_version), 0);
-    atomic_store(&(neg_sentinel->delete_version), 0); /* Set to 0 because it's not deleted */
-
-
+    /* Allocating and initializing the positive sentinel node of the LFSLL */
     pos_sentinel = (H5P_mt_prop_t *)malloc(sizeof(H5P_mt_prop_t));
     if ( ! pos_sentinel )
-        printf(stderr, "\nNew property allocation failed."); 
+        fprintf(stderr, "\nNew property allocation failed."); 
 
     /* Initalize property fields */
     pos_sentinel->tag = H5P_MT_PROP_TAG;
 
-    atomic_store(&(pos_sentinel->next.ptr),     NULL);
-    atomic_store(&(pos_sentinel->next.deleted), FALSE);
+    pos_next.ptr          = NULL;
+    pos_next.deleted      = FALSE;
+    pos_next.dummy_bool_1 = FALSE;
+    pos_next.dummy_bool_2 = FALSE;
+    pos_next.dummy_bool_3 = FALSE;
+    atomic_store(&(pos_sentinel->next), pos_next);
 
     pos_sentinel->sentinel      = TRUE;
     pos_sentinel->in_prop_class = TRUE;
@@ -159,25 +146,59 @@ H5P_init(void)
 
     pos_sentinel->name = (char *)"pos_sentinel";
 
-    atomic_store(&(pos_sentinel->value.ptr),  0);
-    atomic_store(&(pos_sentinel->value.size), 0);
+    pos_value.ptr  = NULL;
+    pos_value.size = 0;
+
+    atomic_store(&(pos_sentinel->value), pos_value);
     
-    atomic_store(&(pos_sentinel->create_version), 0);
-    atomic_store(&(pos_sentinel->delete_version), 0); /* Set to 0 because it's not deleted */
+    atomic_store(&(pos_sentinel->create_version), 1);
+    atomic_store(&(pos_sentinel->delete_version), 0); 
 
 
-    atomic_store(&(neg_sentinel->next.ptr), pos_sentinel);
+    /* Allocating and initializing the negative sentinel node of the LFSLL */
+    neg_sentinel = (H5P_mt_prop_t *)malloc(sizeof(H5P_mt_prop_t));
+    if ( ! neg_sentinel )
+        fprintf(stderr, "\nNew property allocation failed."); 
+
+    /* Initalize property fields */
+    neg_sentinel->tag = H5P_MT_PROP_TAG;
+
+    neg_next.ptr          = pos_sentinel;
+    neg_next.deleted      = FALSE;
+    neg_next.dummy_bool_1 = FALSE;
+    neg_next.dummy_bool_2 = FALSE;
+    neg_next.dummy_bool_3 = FALSE;
+    atomic_store(&(neg_sentinel->next), neg_next);
+
+    neg_sentinel->sentinel      = TRUE;
+    neg_sentinel->in_prop_class = TRUE;
+
+    /* ref_count is only used if the property is in a property class. */
+    atomic_store(&(neg_sentinel->ref_count), 0);
+
+    neg_sentinel->chksum = LLONG_MIN;
+
+    neg_sentinel->name = (char *)"neg_sentinel";
+
+    neg_value.ptr  = NULL;
+    neg_value.size = 0;
+
+    atomic_store(&(neg_sentinel->value), neg_value);
+    
+    atomic_store(&(neg_sentinel->create_version), 1);
+    atomic_store(&(neg_sentinel->delete_version), 0); /* Set to 0 because it's not deleted */
+
+
 
 
     /* Allocating and Initializing the root property list class */
 
-#if 0 /* root property list class is now a global struct */
 
     /* Allocate memory for the root property list class */
-    root_class = (H5P_mt_class_t *)malloc(sizeof(H5P_mt_class_t));
-    if ( ! root_class )
-        printf(stderr, "New class allocation failed.");
-#endif
+    H5P_mt_rootcls_g = (H5P_mt_class_t *)malloc(sizeof(H5P_mt_class_t));
+    if ( ! H5P_mt_rootcls_g )
+        fprintf(stderr, "New class allocation failed.");
+
 
     /* Initialize class fields */
     H5P_mt_rootcls_g->tag = H5P_MT_CLASS_TAG;
@@ -186,28 +207,84 @@ H5P_init(void)
     H5P_mt_rootcls_g->parent_ptr     = NULL;
     H5P_mt_rootcls_g->parent_version = 0;
 
-    H5P_mt_rootcls_g->name              = "root";
-    atomic_store(&(H5P_mt_rootcls_g->id), H5I_INVALID_HID);
-    H5P_mt_rootcls_g->type              = H5P_TYPE_ROOT;
+    H5P_mt_rootcls_g->name = "root";
+    /* Trying H5I_INVALID_HID gives warning saying it's an 'int' */
+    atomic_store(&(H5P_mt_rootcls_g->id), NULL); 
+    H5P_mt_rootcls_g->type = H5P_TYPE_ROOT;
 
     atomic_store(&(H5P_mt_rootcls_g->curr_version), 1);
     atomic_store(&(H5P_mt_rootcls_g->next_version), 2);
 
-    H5P_mt_rootcls_g->pl_head                    = neg_sentinel;
+    H5P_mt_rootcls_g->pl_head = neg_sentinel;
     atomic_store(&(H5P_mt_rootcls_g->log_pl_len),  0);
     atomic_store(&(H5P_mt_rootcls_g->phys_pl_len), 2);
 
-    atomic_store(&(H5P_mt_rootcls_g->ref_count.pl),      0);
-    atomic_store(&(H5P_mt_rootcls_g->ref_count.plc),     0);
-    atomic_store(&(H5P_mt_rootcls_g->ref_count.deleted), FALSE);
+    ref_count.pl      = 0;
+    ref_count.plc     = 0;
+    ref_count.deleted = FALSE;
+    atomic_store(&(H5P_mt_rootcls_g->ref_count), ref_count);
 
-    atomic_store(&(H5P_mt_rootcls_g->thrd.count),   1);
-    atomic_store(&(H5P_mt_rootcls_g->thrd.opening), TRUE);
-    atomic_store(&(H5P_mt_rootcls_g->thrd.closing), FALSE);
+    thrd.count   = 0;
+    thrd.opening = FALSE;
+    thrd.closing = FALSE;
+    atomic_store(&(H5P_mt_rootcls_g->thrd), thrd);
 
-    atomic_store(&(H5P_mt_rootcls_g->fl_next.ptr), NULL);
-    atomic_store(&(H5P_mt_rootcls_g->fl_next.sn),  0);
+    fl_next.ptr = NULL;
+    fl_next.sn  = 0;
+    atomic_store(&(H5P_mt_rootcls_g->fl_next), fl_next);
 
+
+    /* Initialize stats */
+
+    /* H5P_mt_class_t comparison stats */
+    atomic_init(&(H5P_mt_rootcls_g->class_max_derived_classes),        0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_max_version_number),         0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_max_num_phys_props),         2ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_max_num_log_props),          0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_insert_total_nodes_visited), 0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_delete_total_nodes_visited), 0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_insert_max_nodes_visited),   0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_delete_max_nodes_visited),   0ULL);
+
+    /* H5P_mt_active_thread_count_t stats */
+    atomic_init(&(H5P_mt_rootcls_g->class_num_thrd_count_update_cols), 0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_thrd_count_update),      0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_thrd_closing_flag_set),  0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_thrd_opening_flag_set),  0ULL);
+
+    /* H5P_mt_class_ref_counts_t stats */
+    atomic_init(&(H5P_mt_rootcls_g->class_num_ref_count_cols),   0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_ref_count_update), 0ULL);
+
+    /* H5P_mt_class_sptr_t (free list) stats */
+    atomic_init(&(H5P_mt_rootcls_g->class_num_class_fl_insert_cols), 0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_class_fl_insert),      0ULL);
+
+    /* H5P__insert_prop_class() function stats */
+    atomic_init(&(H5P_mt_rootcls_g->class_num_insert_prop_cols),        0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_insert_prop_success),     0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_insert_nodes_visited),        0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->H5P__insert_prop_class__num_calls), 0ULL);
+
+    /* H5P__delete_prop_class() function stats */
+    atomic_init(&(H5P_mt_rootcls_g->class_delete_nodes_visited),        0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_delete_prop_nonexistant), 0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_prop_delete_version_set), 0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->H5P__delete_prop_class__num_calls), 0ULL);
+
+    /* H5P__find_mod_point() function stats */
+    atomic_init(&(H5P_mt_rootcls_g->class_num_prop_chksum_cols),     0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_prop_name_cols),       0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->H5P__find_mod_point__num_calls), 0ULL);
+    
+    /* H5P__create_prop() function stats */
+    atomic_init(&(H5P_mt_rootcls_g->class_num_prop_created),      0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->H5P__create_prop__num_calls), 0ULL);
+
+    /* H5P_mt_prop_t stats */
+    atomic_init(&(H5P_mt_rootcls_g->class_num_props_copied),      0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_num_props_modified),    0ULL);
+    atomic_init(&(H5P_mt_rootcls_g->class_max_num_prop_modified), 0ULL);
 
 } /* H5P_init() */
 
@@ -232,49 +309,339 @@ H5P_init(void)
  ****************************************************************************************
  */
 H5P_mt_class_t *
-H5P__create_class(H5P_mt_class_t *parent, uint64_t parent_version, 
-                  const char *name, H5P_plist_type_t type)
+H5P__mt_create_class(H5P_mt_class_t *parent, uint64_t parent_version, 
+                     const char *name, H5P_plist_type_t type)
 {
-    H5P_mt_class_t * new_class;
+    H5P_mt_class_t             * new_class;
+    hid_t                        parent_id;
+    H5P_mt_class_ref_counts_t    parent_ref;
+    H5P_mt_class_ref_counts_t    ref_count;
+    H5P_mt_class_ref_counts_t    update_ref;
+    H5P_mt_active_thread_count_t parent_thrd;
+    H5P_mt_active_thread_count_t update_thrd;
+    H5P_mt_active_thread_count_t thrd;
+    H5P_mt_class_sptr_t          fl_next;
+    H5P_mt_class_sptr_t          new_fl_next;
+    H5P_mt_class_t             * fl_class_one;
+    H5P_mt_class_t             * fl_class_two;
+    H5P_mt_class_t             * second_class;
+    hbool_t                      done  = FALSE;
+    hbool_t                      retry = FALSE;
+    hbool_t                      closing = FALSE;
 
     H5P_mt_class_t * ret_value = NULL;
 
-    /* Allocate memory for the new property list class */
-    new_class = (H5P_mt_class_t *)malloc(sizeof(H5P_mt_class_t));
-    if ( ! new_class )
-        printf(stderr, "New class allocation failed.");
-
-    /* Initialize class fields */
-    new_class->tag = H5P_MT_CLASS_TAG;
-
-    new_class->parent_id      = parent->id;
-    new_class->parent_ptr     = parent;
-    new_class->parent_version = parent_version;
-
-    new_class->name = name;
-    atomic_store(&(new_class->id), H5I_INVALID_HID);
-    new_class->type = type;
-
-    atomic_store(&(new_class->curr_version), 1);
-    atomic_store(&(new_class->next_version), 2);
-
-    new_class->pl_head = NULL;
-    atomic_store(&(new_class->log_pl_len),  0);
-    atomic_store(&(new_class->phys_pl_len), 2);
-
-    atomic_store(&(new_class->ref_count.pl),      0);
-    atomic_store(&(new_class->ref_count.plc),     0);
-    atomic_store(&(new_class->ref_count.deleted), FALSE);
-
-    atomic_store(&(new_class->thrd.count),   1);
-    atomic_store(&(new_class->thrd.opening), TRUE);
-    atomic_store(&(new_class->thrd.closing), FALSE);
-
-    atomic_store(&(new_class->fl_next.ptr), NULL);
-    atomic_store(&(new_class->fl_next.sn),  0);
+    assert(parent);
+    assert(parent->tag == H5P_MT_CLASS_TAG);
 
 
+    /* Ensure the class isn't opening or closing and increment thread count */
+    do 
+    {
+        parent_thrd = atomic_load(&(parent->thrd));
+
+        if ( parent_thrd.closing )
+        {
+            /* update stats */
+            /* num_thrd_closing_set */
+            atomic_fetch_add(&(parent->class_num_thrd_opening_flag_set), 1);
+
+            done    = TRUE;
+            closing = TRUE;
+        }
+        else if ( ! parent_thrd.opening )
+        {
+            update_thrd = parent_thrd;
+            update_thrd.count++;
+
+            if ( ! atomic_compare_exchange_strong(&(parent->thrd), 
+                                                   &parent_thrd, update_thrd))
+            {
+                /* attempt failed, update stats and try again */
+                /* num_thrd_count_update_cols */
+                atomic_fetch_add(&(parent->class_num_thrd_count_update_cols), 1);
+            }
+            else
+            {
+                /* attempt succeded update stats and set done */
+                atomic_fetch_add(&(parent->class_num_thrd_count_update), 1);
+
+                done = TRUE;
+            }
+        }
+        else
+        {
+            /* update stats and try again */
+            atomic_fetch_add(&(parent->class_num_thrd_opening_flag_set), 1);
+        }
+
+
+    } while ( ! done );
+
+
+    if ( ! closing )
+    {
+
+        /* Allocate memory for the new property list class */
+
+        new_class = (H5P_mt_class_t *)malloc(sizeof(H5P_mt_class_t));
+        if ( ! new_class )
+        {
+            fprintf(stderr, "New class allocation failed.");
+            return NULL;
+        }
+
+        /* Initialize class fields */
+        new_class->tag = H5P_MT_CLASS_TAG;
+
+        parent_id = (hid_t)atomic_load(&(parent->id));
+        new_class->parent_id      = parent_id;
+
+        new_class->parent_ptr     = parent;
+        new_class->parent_version = parent_version;
+
+        new_class->name = name;
+        /* Trying H5I_INVALID_HID gives warning saying it's an 'int' */
+        atomic_store(&(new_class->id), NULL);
+        new_class->type = type;
+
+        atomic_store(&(new_class->curr_version), 1);
+        atomic_store(&(new_class->next_version), 2);
+
+        new_class->pl_head = H5P__copy_lfsll(parent->pl_head, parent_version, new_class);
+
+        ref_count.pl      = 0;
+        ref_count.plc     = 0;
+        ref_count.deleted = FALSE;
+        atomic_store(&(new_class->ref_count), ref_count);
+
+        thrd.count   = 1;
+        thrd.opening = TRUE;
+        thrd.closing = FALSE;
+        atomic_store(&(new_class->thrd), thrd);
+
+        fl_next.ptr = NULL;
+        fl_next.sn  = 0;
+        atomic_store(&(new_class->fl_next), fl_next);
+
+
+        /* Update Parent class derived counts */
+        done = FALSE;
+
+        do
+        {
+            parent_ref = atomic_load(&(parent->ref_count));
+            update_ref = parent_ref;
+            update_ref.plc++;
+
+            /* Attempt to atomically update the parent class's count of derived classes */
+            if ( ! atomic_compare_exchange_strong(&(parent->ref_count), &parent_ref, update_ref) )
+            {
+                /* update stats */
+                /* num_class_ref_count_cols */
+            }
+            else /* Attempt was successful */
+            {
+                /* update stats */
+                /* num_class_ref_count_update */
+
+                done = TRUE;
+            }
+
+        } while ( ! done );
+
+        assert(done);
+
+        /* Insert new class at the tail of the class free list */
+        done = FALSE;
+        do 
+        {
+            assert(!done);
+
+            retry = FALSE;
+
+            fl_class_one = parent;
+
+            fl_next = atomic_load(&(fl_class_one->fl_next));
+            fl_class_two = fl_next.ptr;
+
+            do
+            {
+                /* If fl_class is not the tail, iterate the free list */
+                if ( fl_class_two )
+                {
+                    fl_class_one = fl_class_two;
+                    fl_next = atomic_load(&(fl_class_two->fl_next));
+                    fl_class_two = fl_next.ptr;
+                }
+                /* If fl_class is the tail insert new_class at tail */
+                else
+                {
+                    new_fl_next.ptr = new_class;
+                    new_fl_next.sn  = fl_next.sn + 1;
+                    
+                    /** Attempt to atomically insert the new_class.
+                     * 
+                     * NOTE: if this fails, another thread modified the class free list and
+                     * we must update stats and restart to ensure the new_class is correctly
+                     * inserted.
+                     */
+                    if ( ! atomic_compare_exchange_strong(&(fl_class_one->fl_next), 
+                                                        &fl_next, new_fl_next))
+                    {
+                        /* update stats */
+                        /* num_class_fl_insert_cols */
+
+                        retry = TRUE;
+                    }
+                    else /* The attempt was successfule update stats and mark done */
+                    {
+                        /* update stats */
+                        /* num_class_fl_insert */
+
+                        done = TRUE;
+                    }
+                } /* end else ( ! fl_class_two ) */
+
+            } while ( ( ! done ) && ( ! retry ) );
+
+            assert( ! ( done && retry ) );
+
+        } while ( retry );
+
+        assert(done);
+        assert(!retry);
+
+        thrd = atomic_load(&(new_class->thrd));
+        thrd.count--;
+        thrd.opening = FALSE;
+
+        atomic_store(&(new_class->thrd), thrd);
+
+        atomic_fetch_sub(&(parent_thrd.count), 1);
+
+    } /* end if ( ! closing )*/
+
+    ret_value = new_class;
+
+    return(ret_value);
+   
 } /* H5P__create_class() */
+
+
+
+/**
+ * 
+ */
+H5P_mt_prop_t *
+H5P__copy_lfsll(H5P_mt_prop_t *pl_head, uint64_t curr_version, H5P_mt_class_t *new_class)
+{
+    H5P_mt_prop_t     * new_head;
+    H5P_mt_prop_t     * new_prop;
+    H5P_mt_prop_t     * parent_prop;
+    H5P_mt_prop_aptr_t  parent_first;
+    H5P_mt_prop_aptr_t  parent_next;
+    H5P_mt_prop_value_t parent_value;
+    uint64_t            phys_pl_len = 0;
+    uint64_t            log_pl_len = 0;
+
+    H5P_mt_prop_t * ret_value;
+
+    assert(pl_head);
+    assert(pl_head->tag ==  H5P_MT_PROP_TAG);
+    assert(pl_head->sentinel == TRUE);
+
+
+    /* Create the head of LFSLL, the first sentinel node */
+    new_head = (H5P_mt_prop_t *)malloc(sizeof(H5P_mt_prop_t));
+    if ( ! new_head )
+        fprintf(stderr, "New property allocation failed."); 
+    
+    parent_next  = atomic_load(&(pl_head->next));
+    parent_value = atomic_load(&(pl_head->value));
+
+    assert(parent_next.ptr);
+    assert(parent_next.ptr->tag == H5P_MT_PROP_TAG);
+    
+
+    new_head->tag            = H5P_MT_PROP_TAG;
+
+    atomic_store(&(new_head->next), parent_next);
+
+    new_head->sentinel       = TRUE;
+    new_head->in_prop_class  = pl_head->in_prop_class;
+
+    atomic_store(&(new_head->ref_count), 0);
+
+    new_head->chksum         = pl_head->chksum;
+    new_head->name           = pl_head->name;
+
+    atomic_store(&(new_head->value), parent_value);
+    atomic_store(&(new_head->create_version), 1);
+    atomic_store(&(new_head->delete_version), 0);
+
+
+    /* Increment physicaly length */
+    phys_pl_len++;    
+
+    /* Loop through the parent LFSLL to copy the properties */
+    while ( parent_next.ptr != NULL )
+    {
+        /* update to the next property */
+        parent_prop  = atomic_load(&(parent_next.ptr));
+        parent_next  = atomic_load(&(parent_prop->next));
+        parent_value = atomic_load(&(parent_prop->value));
+
+        /* If the parent property is a valid entry for the new LFSLL copy it in */
+        if (( parent_prop->create_version <= curr_version ) &&
+            (( parent_prop->delete_version > curr_version ) ||
+             ( parent_prop->delete_version == 0 ) ) )
+        {
+            /* Allocate memory for new property */
+            new_prop = (H5P_mt_prop_t *)malloc(sizeof(H5P_mt_prop_t));
+            if ( ! new_prop )
+                fprintf(stderr, "New property allocation failed."); 
+
+            /* Copy appropriate fields or set them if copying isn't appropriate */
+            new_prop->tag            = H5P_MT_PROP_TAG;
+
+            atomic_store(&(new_prop->next), parent_next);
+
+            new_prop->sentinel       = parent_prop->sentinel;
+            new_prop->in_prop_class  = parent_prop->in_prop_class;
+
+            atomic_store(&(new_prop->ref_count), 0);
+
+            new_prop->chksum         = parent_prop->chksum;
+            new_prop->name           = parent_prop->name;
+
+            atomic_store(&(new_prop->value), parent_value);
+            atomic_store(&(new_prop->create_version), 1);
+            atomic_store(&(new_prop->delete_version), 0);
+
+            /* If it's not a sentinel node increment logicaly length */
+            if ( ! parent_prop->sentinel )
+            {
+                log_pl_len++;
+            }
+            /* Increment physical length */
+            phys_pl_len++;
+
+        } /* end if () */
+
+    } /* end while ( parent_next.ptr != NULL ) */
+       
+    assert(parent_prop->sentinel);
+
+    /* Atomically store the logical and physical lengths into the new class */
+    atomic_store(&(new_class->log_pl_len), log_pl_len);
+    atomic_store(&(new_class->phys_pl_len), phys_pl_len);
+
+    ret_value = new_head;
+
+    return(ret_value);
+
+} /* H5P__mt_copy_lfsll() */
 
 
 
@@ -368,7 +735,9 @@ H5P_mt_prop_t *
 H5P__create_prop(const char *name, void *value_ptr, size_t value_size, 
                  bool in_prop_class, uint64_t version)
 {
-    H5P_mt_prop_t * new_prop;
+    H5P_mt_prop_t     * new_prop;
+    H5P_mt_prop_aptr_t  next;
+    H5P_mt_prop_value_t value;
 
     H5P_mt_prop_t * ret_value = NULL;
 
@@ -377,13 +746,17 @@ H5P__create_prop(const char *name, void *value_ptr, size_t value_size,
     /* Allocate memory for the new property */
     new_prop = (H5P_mt_prop_t *)malloc(sizeof(H5P_mt_prop_t));
     if ( ! new_prop )
-        printf(stderr, "New property allocation failed."); 
+        fprintf(stderr, "New property allocation failed."); 
 
     /* Initalize property fields */
     new_prop->tag = H5P_MT_PROP_TAG;
 
-    atomic_store(&(new_prop->next.ptr),     NULL);
-    atomic_store(&(new_prop->next.deleted), FALSE);
+    next.ptr = NULL;
+    next.deleted = FALSE;
+    next.dummy_bool_1 = FALSE;
+    next.dummy_bool_2 = FALSE;
+    next.dummy_bool_3 = FALSE;
+    atomic_store(&(new_prop->next), next);
 
     new_prop->sentinel      = FALSE;
     new_prop->in_prop_class = in_prop_class;
@@ -393,12 +766,13 @@ H5P__create_prop(const char *name, void *value_ptr, size_t value_size,
 
     new_prop->chksum = H5P__calc_checksum(name);
 
-    assert(0 != new_prop->chksum);
+    assert( new_prop->chksum > LLONG_MIN && new_prop->chksum < LLONG_MAX );
 
     new_prop->name = (char *)name;
 
-    atomic_store(&(new_prop->value.ptr),  value_ptr);
-    atomic_store(&(new_prop->value.size), value_size);
+    value.ptr  = value_ptr;
+    value.size = value_size;
+    atomic_store(&(new_prop->value), value);
     
     atomic_store(&(new_prop->create_version), version);
     atomic_store(&(new_prop->delete_version), 0); /* Set to 0 because it's not deleted */
@@ -417,12 +791,12 @@ H5P__create_prop(const char *name, void *value_ptr, size_t value_size,
  * Purpose:     Inserts a H5P_mt_prop_t (property struct) into the LFSLL of a 
  *              H5P_mt_class_t (property list class struct) that stores it's properties.
  *
- *              This function firstly calls H5P__create_prop() to create the 
- *              H5P_mt_prop_t struct to store the property. Secondly this function passes
- *              pointers to the void function H5P__find_mod_point() which passes back the 
- *              pointers that have been updated to the two properties in the LFSLL where 
- *              the new property will be inserted. Pointers to values needed for stats 
- *              keeping and a value used for comparing the name field of the 
+ *              This function firstly calls H5P__create_prop() to create the new
+ *              H5P_mt_prop_t struct to store the property. Secondly, this function 
+ *              passes pointers to the void function H5P__find_mod_point() which passes 
+ *              back the pointers that have been updated to the two properties in the 
+ *              LFSLL where the new property will be inserted. Pointers to values needed 
+ *              for stats keeping and a value used for comparing the name field of the 
  *              H5P_mt_prop_t structs is passed for if the properties had the same chksum
  *              field are also passed to H5P__find_mod_point().
  * 
@@ -448,23 +822,28 @@ H5P__create_prop(const char *name, void *value_ptr, size_t value_size,
  ****************************************************************************************
  */
 herr_t 
-H5P__insert_prop_class(H5P_mt_class_t *class, const char *name, size_t size, void *value)
+H5P__insert_prop_class(H5P_mt_class_t *class, const char *name, void *value, size_t size)
 {
-    H5P_mt_prop_t * new_prop;
-    H5P_mt_prop_t * first_prop;
-    H5P_mt_prop_t * second_prop;
-    uint64_t        curr_version  = 0;
-    uint64_t        next_version  = 0;
-    int32_t       * deletes       = 0;
-    int32_t       * nodes_visited = 0;
-    int32_t       * thrd_cols     = 0;
-    int32_t         cmp_result    = 0;
-    hbool_t         done;
+    H5P_mt_prop_t    * new_prop;
+    H5P_mt_prop_t    * first_prop;
+    H5P_mt_prop_t    * second_prop;
+    H5P_mt_prop_aptr_t next;
+    H5P_mt_prop_aptr_t new_prop_next;
+    H5P_mt_prop_aptr_t updated_next;
+    H5P_mt_active_thread_count_t thrd;
+    H5P_mt_active_thread_count_t update_thrd;
+    uint64_t           curr_version  = 0;
+    uint64_t           next_version  = 0;
+    int32_t            deletes       = 0;
+    int32_t            nodes_visited = 0;
+    int32_t            thrd_cols     = 0;
+    int32_t            cmp_result    = 0;
+    hbool_t            done          = FALSE;
+    hbool_t            closing       = FALSE;
 
-    herr_t          ret_value = SUCCEED;
+    herr_t             ret_value = SUCCEED;
 
     assert(class);
-    assert(!class->ref_count.deleted);
     assert(class->tag == H5P_MT_CLASS_TAG);
 
     assert(name);
@@ -473,131 +852,251 @@ H5P__insert_prop_class(H5P_mt_class_t *class, const char *name, size_t size, voi
     /* update stats */
     /* H5P__insert_prop_class__num_calls */
 
-    
-    curr_version = atomic_load(&(class->curr_version));
-
-    new_prop = H5P__create_prop(name, value, size, TRUE, curr_version);
-
-    assert(new_prop);
-    assert(new_prop->tag == H5P_MT_PROP_TAG);
-
-
+    /* Ensure the class isn't opening or closing and increment thread count */
     do 
     {
-        first_prop  = NULL;
-        second_prop = NULL;
+        thrd = atomic_load(&(class->thrd));
 
-        /** 
-         * The current implementation of H5P__find_mod_point() should either succeed or 
-         * trigger an assertion -- thus no need to check return value at present.
-         */
-        H5P__find_mod_point(class,
-                            &first_prop,
-                            &second_prop,
-                            &deletes,
-                            &nodes_visited,
-                            &thrd_cols,
-                            &new_prop,
-                            cmp_result);
-
-        assert(first_prop);
-        assert(second_prop);
-
-        assert(first_prop->tag == H5P_MT_PROP_TAG);
-        assert(second_prop->tag == H5P_MT_PROP_TAG);
-
-
-        if ( first_prop->chksum <= new_prop->chksum )
+        if ( thrd.closing )
         {
-            if (( second_prop->chksum > new_prop->chksum ) ||
-               (( second_prop->chksum == new_prop->chksum ) && ( cmp_result > 0 )) ||
-               (( second_prop->chksum == new_prop->chksum ) && ( cmp_result == 0 ) &&
-                ( second_prop->create_version < new_prop->create_version ) ) )
-            {  
-                curr_version = atomic_load(&(class->curr_version));
-                next_version = atomic_fetch_add(&(class->next_version), 1);
+            /* num_thrd_closing_set */
 
-                assert(curr_version < next_version);
+            done    = TRUE;
+            closing = TRUE;
+        }
+        else if ( ! thrd.opening )
+        {
+            update_thrd = thrd;
+            update_thrd.count++;
 
-                while ( curr_version + 1 < next_version )
-                {
-                    sleep(1);
-
-                    curr_version = atomic_load(&(class->curr_version));
-                }
-
-                if ( curr_version > next_version )
-                {
-                    printf(stderr, "\nsimulanious modify, insert, and/or delete was done out of order.");
-                }   
-
-                assert(curr_version += next_version);             
-
-                /* prep new_prop to be inserted between first_prop and second_prop */
-                atomic_store(&(new_prop->next.ptr), second_prop);
-
-                /** Attempt to atomically insert new_prop 
-                 * 
-                 * NOTE: If this fails, another thread modified the LFSLL and we must 
-                 * update stats and restart to ensure new_prop is correctly inserted.
-                 */
-                if ( ! atomic_compare_exchange_strong(&(first_prop->next.ptr),
-                                                        &second_prop, new_prop) )
-                {
-                    /* update stats */
-                    /* num_insert_prop_class_cols */
-                    
-                    continue;
-                }
-                else /* The attempt was successful */
-                {
-                    atomic_fetch_add(&(class->log_pl_len), 1);
-                    atomic_fetch_add(&(class->phys_pl_len), 1);
-
-                    atomic_store(&(class->curr_version), next_version);
-
-                    done = TRUE;
-
-                    /* update stats */
-                    /* num_insert_prop_class_success */
-                }
-            }
-            else /* second_prop->chksum <= new_prop->chksum */
+            if ( ! atomic_compare_exchange_strong(&(class->thrd), 
+                                                   &thrd, update_thrd))
             {
-                if ( cmp_result == 0 && 
-                     second_prop->create_version == new_prop->create_version )
-                {
-                    printf(stderr, "\nNew property already exists in property class.");
-
-                    ret_value = -1;
-                }
-                else
-                {
-                    /** 
-                     * H5P__find_mod_point didn't return pointers correctly, throw an
-                     * assertion error to end code.
-                     */
-                    assert(cmp_result >= 0);
-                    assert(second_prop->create_version > new_prop->create_version);
-                }
-                
+                /* attempt failed, update stats and try again */
+                /* num_thrd_count_update_cols */
             }
-        } /* if ( first_prop->chksum <= new_prop->chksum ) */
+            else
+            {
+                /* num_thrd_count_update */
+
+                done = TRUE;
+            }
+        }
+        else
+        {
+            /* update stats and try again */
+            /* num_thrd_opening_set */
+        }
 
     } while ( ! done );
 
-    assert(done);
-    assert(deletes >= 0);
-    assert(nodes_visited >= 0);
-    assert(thrd_cols >= 0);
 
-    /* update stats */
-    /* nodes_visited_prop_insert_class += nodes_visited */
-    /* num_insert_prop_class_cols += thrd_cols */
 
-done: 
-    if ( ret_value < 0 )
-        free(new_prop);
+    if ( ! closing )
+    {
+        /**
+         * First thing is we must ensure there are no other modifies, inserts, or deletes
+         * other threads are doing in this property list class. We do this by using 
+         * atomic_fetch_add() on class->next_version to get the next_version and increment 
+         * it. Then class->curr_version is read and curr_version and next_version are 
+         * compared. If curr_version is one less than next_version we proceed. However, if 
+         * next_version is more than one greater than curr_version, then at least one other 
+         * thread is performing an operation on this property list class's LFSLL. We must 
+         * enter a loop to sleep and then read curr_version from the class until it's been 
+         * updated so curr_version is only one less than the next_version this thread 
+         * previously read.
+         * 
+         * NOTE: this is a temporary solution to simultaneous threads editing the LFSLL and 
+         * future iterations of this code will improve how this is handled.
+         */
+        curr_version = atomic_load(&(class->curr_version));
+        next_version = atomic_fetch_add(&(class->next_version), 1);
+
+        assert(curr_version < next_version); 
+
+        while ( curr_version + 1 < next_version )
+        {
+            sleep(1);
+
+            curr_version = atomic_load(&(class->curr_version));
+        }
+
+        if ( curr_version > next_version )
+        {
+            fprintf(stderr, "\nsimulanious modify, insert, and/or delete was done out of order.");
+        }   
+
+        assert(curr_version + 1 ==  next_version);  
+
+        
+        /* Now that this thread is good to proceed, create the new property first */
+        new_prop = H5P__create_prop(name, value, size, TRUE, next_version);
+
+        assert(new_prop);
+        assert(new_prop->tag == H5P_MT_PROP_TAG);
+
+
+        /* Finds the position in the class's LFSLL to insert the new property. */
+
+        /** 
+         * NOTE: As long as H5P__find_mod_point() works correctly 
+         * the do-while can probably be removed.
+         */
+        done = FALSE;
+        do 
+        {
+            first_prop  = NULL;
+            second_prop = NULL;
+
+            /** 
+             * The current implementation of H5P__find_mod_point() should either succeed or 
+             * trigger an assertion -- thus no need to check return value at present.
+             */
+            H5P__find_mod_point(class,           
+                                &first_prop,     
+                                &second_prop,
+                                &deletes,
+                                &nodes_visited,
+                                &thrd_cols,
+                                new_prop,
+                                &cmp_result);
+
+            assert(first_prop);
+            assert(second_prop);
+
+            assert(first_prop->tag == H5P_MT_PROP_TAG);
+            assert(second_prop->tag == H5P_MT_PROP_TAG);
+
+
+            if ( first_prop->chksum <= new_prop->chksum )
+            {
+                if (( second_prop->chksum > new_prop->chksum ) ||
+                (( second_prop->chksum == new_prop->chksum ) && ( cmp_result > 0 )) ||
+                (( second_prop->chksum == new_prop->chksum ) && ( cmp_result == 0 ) &&
+                    ( second_prop->create_version < new_prop->create_version ) ) )
+                {  
+                    /* prep new_prop to be inserted between first_prop and second_prop */
+                    new_prop_next.ptr          = second_prop;
+                    new_prop_next.deleted      = FALSE;
+                    new_prop_next.dummy_bool_1 = FALSE;
+                    new_prop_next.dummy_bool_2 = FALSE;
+                    new_prop_next.dummy_bool_3 = FALSE;
+                    atomic_store(&(new_prop->next), new_prop_next);
+
+/**
+ * NOTE: Because of the curr_version next_version check this could probably be 
+ * changed to a simpler atomic_store() instead of a atomic_compare_exchange_strong().
+ */
+#if 1 
+
+                    /** Attempt to atomically insert new_prop 
+                     * 
+                     * NOTE: If this fails, another thread modified the LFSLL and we must 
+                     * update stats and restart to ensure new_prop is correctly inserted.
+                     */
+                    next = atomic_load(&(first_prop->next));
+
+                    assert(next.ptr == second_prop);
+
+                    updated_next.ptr          = new_prop;
+                    updated_next.deleted      = FALSE;
+                    updated_next.dummy_bool_1 = FALSE;
+                    updated_next.dummy_bool_2 = FALSE;
+                    updated_next.dummy_bool_3 = FALSE;
+                    if ( ! atomic_compare_exchange_strong(&(first_prop->next),
+                                                            &next, updated_next) )
+                    {
+                        /* update stats */
+                        /* num_insert_prop_class_cols */
+                        
+                        continue;
+                    }
+                    else /* The attempt was successful update stats mark done */
+                    {
+                        /* update stats */
+                        /* num_insert_prop_class_success */
+
+                        done = TRUE;
+                    }
+#endif
+                } /* end if () */
+
+                /** 
+                 * NOTE: as long as H5P__find_mod_point() works correctly and we don't try 
+                 * to insert a property that already exists in the LFSLL, this else could
+                 * probably be removed.
+                 */
+
+                /**
+                 * ( second_prop->chksum < new_prop->chksum ) ||
+                 * ( second_prop->chksum == new_prop->chksum && cmp_result < 0 ) ||
+                 * ( second_prop->chksum == new_prop->chksum && cmp_result == 0 &&
+                 *   second_prop->create_version > target_prop->create_version )
+                 */
+                else 
+                {
+                    /** NOTE: this should not happen */
+                    if ( cmp_result == 0 && 
+                        second_prop->create_version == new_prop->create_version )
+                    {
+                        fprintf(stderr, "\nNew property already exists in property class.");
+
+                        ret_value = -1;
+                    }
+                    /** NOTE: this also should not happen */
+                    else
+                    {
+                        /** 
+                         * H5P__find_mod_point didn't return pointers correctly, throw an
+                         * assertion error to end code.
+                         */
+                        assert(cmp_result >= 0);
+                        assert(second_prop->create_version > new_prop->create_version);
+                    }
+                    
+                }
+            } /* if ( first_prop->chksum <= new_prop->chksum ) */
+
+        } while ( ! done );
+
+        assert(done);
+        assert(deletes >= 0);
+        assert(nodes_visited >= 0);
+        assert(thrd_cols >= 0);
+
+        /* update stats */
+        /* nodes_visited_prop_insert_class += nodes_visited */
+        /* num_insert_prop_class_cols += thrd_cols */
+
+        /* Update physical and logical length of the LFSLL */
+        atomic_fetch_add(&(class->log_pl_len), 1);
+        atomic_fetch_add(&(class->phys_pl_len), 1);
+
+        /* Update curr_version */
+        atomic_store(&(class->curr_version), next_version);
+
+        /* Decrement the number of threads that are currently active in the host struct */
+        /* Update the class's current version */
+        atomic_store(&(class->curr_version), next_version);
+
+        /* Decrement the number of threads that are currently active in the host struct */
+        thrd = atomic_load(&(class->thrd));
+
+        update_thrd = thrd;
+        update_thrd.count--;
+
+        if ( ! atomic_compare_exchange_strong(&(class->thrd), &thrd, update_thrd))
+        {
+            /* update stats */
+            /* num_thrd_count_update_cols */
+        }
+        else
+        {
+            /* num_thrd_count_update */
+            
+        }
+
+    }
 
     return(ret_value);
 
@@ -618,15 +1117,16 @@ done:
  *              than the delete_version will not copy that property into their LFSLL 
  *              with the other properties.
  * 
- *              This function calls the function H5P__find_mod_point() and passes the 
- *              class the property is being deleted from, two double pointers of 
+ *              This function calls the function H5P__find_mod_point() and passes 
+ *              pointers for the class and property being deleted, two double pointers of 
  *              H5P_mt_prop_t that are used to iterate the LFSLL, variables used for 
  *              stats keeping, and a variable for the result of strcmp() if the chksum
  *              values of the properties are the same.
  * 
  *              If the second_prop pointer points to a property that is equal to the 
  *              target_prop, then that is the target_prop and will have it's 
- *              delete_version set and the curr_version of the class will be incremented.
+ *              delete_version set to the class's next_version and the curr_version of 
+ *              the class will be incremented.
  * 
  *              If the target_prop falls between first_prop and second_prop then 
  *              target_prop is not in the LFSLL of the class.
@@ -642,142 +1142,215 @@ done:
  ****************************************************************************************
  */
 herr_t
-H5P__delete_prop_class(H5P_mt_prop_t *target_prop, H5P_mt_class_t *class)
+H5P__delete_prop_class(H5P_mt_class_t *class, H5P_mt_prop_t *target_prop)
 {
     H5P_mt_prop_t * first_prop;
     H5P_mt_prop_t * second_prop;
+    H5P_mt_prop_aptr_t next;
+    H5P_mt_active_thread_count_t thrd;
+    H5P_mt_active_thread_count_t update_thrd;
     uint64_t        curr_version    = 0;
     uint64_t        next_version    = 0;
     uint64_t        delete_version  = 0;
-    int32_t       * deletes         = 0;
-    int32_t       * nodes_visited   = 0;
-    int32_t       * thrd_cols       = 0;
+    int32_t         deletes         = 0;
+    int32_t         nodes_visited   = 0;
+    int32_t         thrd_cols       = 0;
     int32_t         cmp_result      = 0;
-    hbool_t         done;
+    hbool_t         done            = FALSE;
+    hbool_t         closing         = FALSE;
 
     herr_t          ret_value = SUCCEED;
 
     assert(class);
-    assert(!class->ref_count.deleted);
     assert(class->tag == H5P_MT_CLASS_TAG);
 
     assert(target_prop);
     assert(target_prop->tag == H5P_MT_PROP_TAG);
     assert(target_prop->delete_version == 0);
 
-    do
+
+    /* update stats */
+    /* H5P__delete_prop_class__num_calls */
+
+    /* Ensure the class isn't opening or closing and increment thread count */
+    do 
     {
-        first_prop  = NULL;
-        second_prop = NULL;
+        thrd = atomic_load(&(class->thrd));
 
-        /** 
-         * The current implementation of H5P__find_mod_point() should either succeed or 
-         * trigger an assertion -- thus no need to check return value at present.
-         */
-        H5P__find_mod_point(class,
-                            &first_prop,
-                            &second_prop,
-                            &deletes,
-                            &nodes_visited,
-                            &thrd_cols,
-                            &target_prop,
-                            cmp_result);
-
-        assert(first_prop);
-        assert(second_prop);
-
-        assert(first_prop->tag == H5P_MT_PROP_TAG);
-        assert(second_prop->tag == H5P_MT_PROP_TAG);
-
-
-        if ( first_prop->chksum <= target_prop->chksum )
+        if ( thrd.closing )
         {
-            /* If any are true, the target property doesn't exist in the LFSLL */
-            if (( second_prop->chksum > target_prop->chksum ) ||
-               (( second_prop->chksum == target_prop->chksum ) && ( cmp_result > 0 )) ||
-               (( second_prop->chksum == target_prop->chksum ) && ( cmp_result == 0 ) &&
-                ( second_prop->create_version < target_prop->create_version ) ) )
+            /* num_thrd_closing_set */
+
+            done    = TRUE;
+            closing = TRUE;
+        }
+        else if ( ! thrd.opening )
+        {
+            update_thrd = thrd;
+            update_thrd.count++;
+
+            if ( ! atomic_compare_exchange_strong(&(class->thrd), 
+                                                   &thrd, update_thrd))
             {
-                /* update stats */
-                /* num_delete_prop_class_prop_nonexistant */
-                printf(stderr, "\nTarget property to delete doesn't exist in property class.");
+                /* attempt failed, update stats and try again */
+                /* num_thrd_count_update_cols */
+            }
+            else
+            {
+                /* num_thrd_count_update */
 
                 done = TRUE;
             }
+        }
+        else
+        {
+            /* update stats and try again */
+            /* num_thrd_opening_set */
+        }
+
+    } while ( ! done );
+
+
+    if ( ! closing )
+    {
+        /**
+         * For details on why the following while loop is being used, see the comment above
+         * the same while loop in the function H5P__insert_prop_class().
+         */
+        next_version = atomic_fetch_add(&(class->next_version), 1);
+        curr_version = atomic_load(&(class->curr_version));
+
+        assert(curr_version < next_version);
+
+        while ( curr_version + 1 < next_version )
+        {
+            sleep(1);
+
+            curr_version = atomic_load(&(class->curr_version));
+        }
+
+        if ( curr_version > next_version )
+        {
+            fprintf(stderr, "\nsimulanious modify, insert, and/or delete was done out of order.");
+        }
+
+        assert(curr_version + 1 == next_version);
+
+
+        /* Finds the property to delete in the class's LFSLL. */
+
+        /** 
+         * NOTE: As long as H5P__find_mod_point() works correctly 
+         * the do-while can probably be removed.
+         */
+        do
+        {
+            first_prop  = NULL;
+            second_prop = NULL;
+
             /** 
-             * If true, then we have found target property and can now delete it.
-             * 
-             * NOTE: The current implementation H5P_mt_prop_t structs (aka properties) 
-             * are not truly being deleted. We simply set the property's delete version 
-             * to 1+ the current version, meaning any class or list derived from this 
-             * class or any version of this class that is >= the properties delete 
-             * version will not contain that property.
+             * The current implementation of H5P__find_mod_point() should either succeed or 
+             * trigger an assertion -- thus no need to check return value at present.
              */
-            else if (( second_prop->chksum == target_prop->chksum ) && 
-                     ( cmp_result == 0 ) && 
-                     ( second_prop->create_version == target_prop->create_version ) )
+            H5P__find_mod_point(class,
+                                &first_prop,
+                                &second_prop,
+                                &deletes,
+                                &nodes_visited,
+                                &thrd_cols,
+                                target_prop,
+                                &cmp_result);
+
+            assert(first_prop);
+            assert(second_prop);
+
+            assert(first_prop->tag == H5P_MT_PROP_TAG);
+            assert(second_prop->tag == H5P_MT_PROP_TAG);
+
+
+            if ( first_prop->chksum <= target_prop->chksum )
             {
-                curr_version = atomic_load(&(class->curr_version));
-                next_version = atomic_fetch_add(&(class->next_version), 1);
-
-                assert(curr_version < next_version);
-
-                while ( curr_version + 1 < next_version )
-                {
-                    sleep(1);
-
-                    curr_version = atomic_load(&(class->curr_version));
-                }
-
-                if ( curr_version > next_version )
-                {
-                    printf(stderr, "\nsimulanious modify, insert, and/or delete was done out of order.");
-                }
-
-                assert(curr_version + 1 == next_version);
-
-                delete_version = atomic_load(&(second_prop->delete_version));
-
-                /* If true, then second_prop (thus target_prop) has already been deleted */
-                if ( delete_version != 0 )
+                /* If any are true, the target property doesn't exist in the LFSLL */
+                if (( second_prop->chksum > target_prop->chksum ) ||
+                (( second_prop->chksum == target_prop->chksum ) && ( cmp_result > 0 )) ||
+                (( second_prop->chksum == target_prop->chksum ) && ( cmp_result == 0 ) &&
+                    ( second_prop->create_version < target_prop->create_version ) ) )
                 {
                     /* update stats */
-                    /* num_delete_prop_class_already_deleted */
-   
+                    /* num_delete_prop_class_prop_nonexistant */
+                    fprintf(stderr, "\nTarget property to delete doesn't exist in property class.");
+
+                    done = TRUE;
                 }
-                else /* delete_version == 0 */
+                /* If true, then we have found target property and can now delete it. */
+                else if (( second_prop->chksum == target_prop->chksum ) && 
+                        ( cmp_result == 0 ) && 
+                        ( second_prop->create_version == target_prop->create_version ) )
                 {
+
+                    delete_version = atomic_load(&(second_prop->delete_version));
+
+                    assert(delete_version == 0);
+
+                    /* Set the prop's delete_version */
                     atomic_store(&(target_prop->delete_version), next_version);
-                    atomic_store(&(class->curr_version), next_version);
 
                     done = TRUE;
 
                     /* update stats */
                     /* num_props_delete_version_set */
-                }
-            } 
-            /**
-             * ( second_prop->chksum < target_chksum ) || 
-             * ( second_prop->chksum == target_chksum && cmp_result < 0 ) ||
-             * ( second_prop->chksum == target_chksum && cmp_result == 0 &&
-             *   second_prop->create_version > target_prop->create_version )
-             */
-            else 
-            {
+                } 
                 /** 
-                 * H5P__find_mod_point didn't return pointers correctly,
-                 * update stats and try again.
+                 * NOTE: as long as H5P__find_mod_point() works correctly and we don't try 
+                 * to delete a property that is already deleted in the LFSLL, this else could
+                 * probably be removed.
                  */
-                assert(cmp_result >= 0);
-                assert(second_prop->create_version > target_prop->create_version);
 
-            }
+                /**
+                 * ( second_prop->chksum < target_chksum ) || 
+                 * ( second_prop->chksum == target_chksum && cmp_result < 0 ) ||
+                 * ( second_prop->chksum == target_chksum && cmp_result == 0 &&
+                 *   second_prop->create_version > target_prop->create_version )
+                 */
+                else 
+                {
+                    /** 
+                     * H5P__find_mod_point didn't return pointers correctly,
+                     * update stats and try again.
+                     */
+                    assert(cmp_result >= 0);
+                    assert(second_prop->create_version > target_prop->create_version);
 
-        } /* end if ( first_prop->chksum <= target_prop->chksum ) */
+                }
+
+            } /* end if ( first_prop->chksum <= target_prop->chksum ) */
 
 
-    } while ( ! done );
-    
+        } while ( ! done );
+
+        /* Update the class's current version */
+        atomic_store(&(class->curr_version), next_version);
+
+        /* Decrement the number of threads that are currently active in the host struct */
+        thrd = atomic_load(&(class->thrd));
+
+        update_thrd = thrd;
+        update_thrd.count--;
+
+        if ( ! atomic_compare_exchange_strong(&(class->thrd), &thrd, update_thrd))
+        {
+            /* update stats */
+            /* num_thrd_count_update_cols */
+        }
+        else
+        {
+            /* num_thrd_count_update */
+
+        }
+    }
+
+
+    return(ret_value);    
 
 } /* end H5P__delete_prop_class() */
 
@@ -789,10 +1362,40 @@ H5P__delete_prop_class(H5P_mt_prop_t *target_prop, H5P_mt_class_t *class)
  * Purpose:     Iterates the lock free singly linked list (LFSLL) of a H5P_mt_class_t.
  * 
  *              This function is called when the LFSLL of a H5P_mt_class_t is needed to 
- *              be iterated to find the point where an insert needs to happen, or find
- *              the H5P_mt_prop_t (property struct) that needs to be deleted or modified.
+ *              be iterated to find the point where a new H5P_mt_prop_t (property struct) 
+ *              needs to be inserted, or find the H5P_mt_prop_t that needs to be deleted 
+ *              or modified.
  * 
+ *              Pointers are passed into this function, one is for the H5P_mt_class_t 
+ *              that contains the LFSLL we are iterating. Three H5P_mt_prop_t pointers, 
+ *              with the target_prop being the property that will be inserted or is being 
+ *              searched for in the LFSLL. The first_ptr_ptr and second_ptr_ptr are the 
+ *              pointers that will be passed back to the calling function with the 
+ *              properties they need. H5P__find_mod_point uses two H5P_mt_prop_t*, 
+ *              first_prop and second_prop to iterate the LFSLL, and compare the entries
+ *              to target_prop.  
+ * 
+ *              If the target_prop equals the second_prop then the search is done. 
+ *              If the target_prop falls between first_prop and second_prop then 
+ *              target_prop doesn't exist in the list, and for inserts the target_prop 
+ *              will be inserted between these two.
+ *              When either of these conditions are met first_ptr_ptr and second_ptr_ptr 
+ *              are set equal to first_prop and second_prop respectively and passed back
+ *              to the calling function. 
+ * 
+ *              cmp_result is a field used for string compares of the name field of the
+ *              H5P_mt_prop_t structs if there is a chksum collision while searching. 
+ *              The field cmp_result stores the result from strcmp() and passes that 
+ *              returned value back to the calling function. 
+ * 
+ *              NOTE: for more information on how the LFSLL is sorted see the description
+ *              comment for structure H5P_mt_class_t in H5Ppkg_mt.h.               
+ * 
+ *              The parameters *deletes_ptr, *nodes_visited_ptr, and *thrd_cols_ptr are
+ *              for stats collecting.
  *              
+ *      
+ * Return:      Void
  *
  ****************************************************************************************
  */
@@ -804,21 +1407,20 @@ H5P__find_mod_point(H5P_mt_class_t *class,
                     int32_t        *nodes_visited_ptr, 
                     int32_t        *thrd_cols_ptr, 
                     H5P_mt_prop_t  *target_prop,
-                    int32_t         cmp_result)
+                    int32_t        *cmp_result_ptr)
 {
-    bool done = FALSE;
-    bool retry = FALSE;
-    int32_t thrd_cols = 0;
-    int32_t deletes = 0;
+    bool done             = FALSE;
+    int32_t thrd_cols     = 0;
+    int32_t deletes       = 0;
     int32_t nodes_visited = 0;
+    int32_t cmp_result;
     H5P_mt_prop_t * first_prop;
     H5P_mt_prop_t * second_prop;
-    H5P_mt_prop_t * next_prop;
+    H5P_mt_prop_aptr_t next_prop;
 
 
     assert(class);
     assert(class->tag == H5P_MT_CLASS_TAG);
-    assert(!class->ref_count.deleted);
     assert(first_ptr_ptr);
     assert(NULL == *first_ptr_ptr);
     assert(second_ptr_ptr);
@@ -831,7 +1433,7 @@ H5P__find_mod_point(H5P_mt_class_t *class,
     assert(target_prop->chksum > LLONG_MIN && target_prop->chksum < LLONG_MAX);
 
     /* update stats */
-    /* H5P__insert_prop_class__num_calls */
+    /* H5P__find_mod_point__num_calls */
 
 
     /** 
@@ -845,200 +1447,93 @@ H5P__find_mod_point(H5P_mt_class_t *class,
      * decreasing order (newest version (higher number) first, oldest version last).
      * 
      */
-    do
+    assert(!done);
+
+    first_prop = class->pl_head;
+    assert(first_prop->sentinel);
+    
+    next_prop = atomic_load(&(first_prop->next));
+    second_prop = atomic_load(&(next_prop.ptr));
+    assert(first_prop != second_prop);
+
+    do 
     {
-        assert(!done);
-
-        retry = FALSE;
-
-        first_prop = class->pl_head;
-        assert(first_prop->sentinel);
+        assert(first_prop);
         assert(first_prop->tag == H5P_MT_PROP_TAG);
-                
-        second_prop = atomic_load(&(first_prop->next.ptr));
-        assert(first_prop != second_prop);
+
+        assert(second_prop);
         assert(second_prop->tag == H5P_MT_PROP_TAG);
 
-        do 
+        assert(first_prop->chksum <= target_prop->chksum);
+
+        /* If true then we're done, and can return the current pointers */
+        if ( second_prop->chksum > target_prop->chksum )
         {
+            done = TRUE;
+        }
+        /* If the chksums equal we must compare the property names */
+        else if ( second_prop->chksum == target_prop->chksum )
+        {
+            /* update stats */
+            /* num_insert_prop_class_chksum_cols */
 
-/** 
- * The code in here is work started on logically and/or physically deleting a property
- * in a class or list, and currently is not being used. Though it may be added later,
- * so keeping what was already written.
- * 
- * This iteration we are not deleting properties other than setting a delete_version on
- * the property to be one higher than the class's or list's current version, and then 
- * incrementing the current version of that class or lsit. 
- */
-#if NODELPROP
+            assert(first_prop);
+            assert(first_prop->tag == H5P_MT_PROP_TAG);
 
-            while (second_prop->next.deleted)
+            assert(second_prop);
+            assert(second_prop->tag == H5P_MT_PROP_TAG);
+
+            assert(first_prop->chksum <= target_prop->chksum);
+
+            cmp_result = strcmp(second_prop->name, target_prop->name);
+
+            /** 
+             * If true then second_prop is greater than target_prop 
+             * lexicographically, and the result is the same as if 
+             * second_prop->chksum was greater than new_prop->chksum.
+             */
+            if ( cmp_result > 0 )
             {
-                if ( second_prop->ref_count != 0 )
-                {
-                    /* Update stats */
-                    /* num_prop_marked_deleted_but_still_referenced */
-
-
-                }
-                else /* second_prop->ref_count == 0 */
-                {
-
-                    assert(first_prop->next.ptr == second_prop);
-                    assert(second_prop->next.ptr != NULL);
-
-                    next_prop = atomic_load(&(second_prop->next.ptr));
-                    assert(next_prop->tag == H5P_MT_PROP_TAG);
-
-                    if ( ! atomic_compare_exchange_strong(&(first_prop->next.ptr), 
-                                                            &second_prop, next_prop) )
-                    {
-                        thrd_cols++;
-                        retry = TRUE;
-                        break;
-                    }
-                    else 
-                    {
-                        atomic_fetch_sub(&(class->phys_pl_len), 1);
-                        deletes++;
-                        nodes_visited++;
-
-                        second_prop = next_prop;
-                        next_prop = atomic_load(&(second_prop->next.ptr));
-
-                        assert(first_prop);
-                        assert(first_prop->tag == H5P_MT_PROP_TAG);
-                        assert(second_prop);
-                        assert(second_prop->tag == H5P_MT_PROP_TAG);
-                    }
-                } /* end else ( second_prop->ref_count == 0 ) */
-
-            } /* end while ( second_prop->next.deleted ) */
-#endif
-
-/* retry is a boolean used for the above #if NODELPROP code, and left in for convience */
-            if ( ! retry )
+                done = TRUE;
+            }
+            /* If true then compare create_versions */
+            else if ( cmp_result == 0 )
             {
-                assert(first_prop);
-                assert(first_prop->tag == H5P_MT_PROP_TAG);
-
-                assert(second_prop);
-                assert(second_prop->tag == H5P_MT_PROP_TAG);
-
-                assert(first_prop->chksum <= target_prop->chksum);
+                /* update stats */
+                /* num_insert_prop_class_name_cols */
 
                 /**
-                 * If true then we're done, and can return the current pointers, because
-                 * a new property will be inserted between first_prop and second_prop or
-                 * for deletes or searches, it means the target_prop is not in the LFSLL.
+                 * If true then deletes and searches will have found their
+                 * property if they equal and if they don't then their 
+                 * target_prop doesn't exist in the LFSLL. While, inserts
+                 * will know where to insert, or the property already exists
+                 * and it won't be inserted.
                  */
-                if ( second_prop->chksum > target_prop->chksum )
+                if ( second_prop->create_version <= target_prop->create_version )
                 {
                     done = TRUE;
                 }
-                /* If the chksums equal we need to compare the names */
-                else if ( second_prop->chksum == target_prop->chksum )
-                {
-                    /* update stats */
-                    /* num_insert_prop_class_chksum_cols */
+            }
+                
+        } /* end else if ( second_prop->chksum == target_prop->chksum ) */
 
-                    int32_t cmp_result;
-                    hbool_t str_cmp_done = FALSE;
+        /* If !done, update the pointers to iterate the LFSLL */
+        if ( ! done )
+        {
+            next_prop = atomic_load(&(second_prop->next));
 
-                    do
-                    {
-                        assert(first_prop);
-                        assert(first_prop->tag == H5P_MT_PROP_TAG);
+            assert(next_prop.ptr);
+            assert(next_prop.ptr->tag == H5P_MT_PROP_TAG);
 
-                        assert(second_prop);
-                        assert(second_prop->tag == H5P_MT_PROP_TAG);
+            first_prop = second_prop;
+            second_prop = next_prop.ptr;
 
-                        assert(first_prop->chksum <= target_prop->chksum);
-
-                        cmp_result = strcmp(second_prop->name, target_prop->name);
-
-                        /** 
-                         * If true then second_prop is greater than target_prop 
-                         * lexicographically, and the result is the same as if 
-                         * second_prop->chksum was greater than new_prop->chksum.
-                         */
-                        if ( cmp_result > 0 )
-                        {
-                            str_cmp_done = TRUE;
-                            done         = TRUE;
-                            break;
-                        }
-                        /* If true then compare create_versions */
-                        else if ( cmp_result == 0 )
-                        {
-                            /* update stats */
-                            /* num_insert_prop_class_name_cols */
-
-                            /**
-                             * If true then deletes and searches will have found their
-                             * property if they equal and if they don't then their 
-                             * target_prop doesn't exist in the LFSLL. While, inserts
-                             * will know where to insert, or the property already exists
-                             * and it won't be inserted.
-                             */
-                            if ( second_prop->create_version <= target_prop->create_version )
-                            {
-                                str_cmp_done = TRUE;
-                                done         = TRUE;
-                                break;                            
-                            }
-                        }
-
-                        /**
-                         * If we get here then we may need another loop in the do-while.
-                         * 
-                         * First we check if the next property in the LFSLL has the same
-                         * chksum as target_prop. If not then we're done, we have the 
-                         * correct position.
-                         * 
-                         * If they are the same chksum, start the loop over.
-                         */
-                        next_prop = atomic_load(&(second_prop->next.ptr));
-
-                        assert(next_prop);
-                        assert(next_prop->tag == H5P_MT_PROP_TAG);
-                        assert(next_prop->chksum >= target_prop->chksum);
-
-                        nodes_visited++;
-
-                        first_prop = second_prop;
-                        second_prop = next_prop;
-
-                        if ( next_prop->chksum != target_prop->chksum )
-                        {
-                            str_cmp_done = TRUE;
-                            done         = TRUE;
-                        }
-                    
-                    } while ( ! str_cmp_done );
-                        
-                } /* else if ( second_prop->chksum == target_prop->chksum ) */
-
-                /* If true, then update the pointers to iterate the LFSLL */
-                if ( ! done )
-                {
-                    first_prop = second_prop;
-                    next_prop = atomic_load(&(second_prop->next.ptr));
-                    second_prop = next_prop;
-
-                    nodes_visited++;
-                }
-            } /* end if ( ! retry ) */
-        
-        } while ( ( ! done ) && ( ! retry ) ); 
-
-        assert( ! ( done && retry ) );
-
-    } while ( retry );
+            nodes_visited++;
+        }
+    
+    } while ( ! done ); 
 
     assert(done);
-    assert(retry);
 
     assert(first_prop->chksum <= target_prop->chksum);
     assert(second_prop->chksum >= target_prop->chksum);
@@ -1047,10 +1542,10 @@ H5P__find_mod_point(H5P_mt_class_t *class,
      * Update the pointers passed into the function with the pointers for 
      * the correct positions in the LFSLL, and the stats while iterating.
      */
-    *first_ptr_ptr = first_prop;
-    *second_ptr_ptr = second_prop;
-    *thrd_cols_ptr += thrd_cols;
-    *deletes_ptr += deletes;
+    *first_ptr_ptr      = first_prop;
+    *second_ptr_ptr     = second_prop;
+    *thrd_cols_ptr     += thrd_cols;
+    *deletes_ptr       += deletes;
     *nodes_visited_ptr += nodes_visited;
 
     return;
@@ -1059,258 +1554,146 @@ H5P__find_mod_point(H5P_mt_class_t *class,
 
 
 
+/**
+ * 
+ */
+herr_t
+H5P__clear_mt_class(void)
+{
+    H5P_mt_class_t             * first_class;
+    H5P_mt_class_t             * second_class;
+    H5P_mt_class_t             * parent;
+    H5P_mt_class_sptr_t          next_class;
+    H5P_mt_class_sptr_t          nulls_class_ptr = {NULL, 0ULL};
+    H5P_mt_prop_t              * first_prop;
+    H5P_mt_prop_t              * second_prop;
+    H5P_mt_prop_aptr_t           next_prop;
+    H5P_mt_prop_aptr_t           nulls_prop_ptr = {NULL, 0ULL};
+    H5P_mt_prop_value_t          nulls_value = {NULL, 0ULL};
+    H5P_mt_class_ref_counts_t    ref_count;
+    H5P_mt_active_thread_count_t thrd;
+    H5P_mt_active_thread_count_t closing_thrd;
+    hbool_t                      done = FALSE;
+    uint32_t                     num_classes = 0;
+    uint32_t                     num_classes_freed = 0;
+    _Atomic hid_t              * null_id = NULL;
 
+    herr_t ret_value = SUCCEED;
 
+    first_class = H5P_mt_rootcls_g;
+    assert(first_class);
+    assert(first_class->tag == H5P_MT_CLASS_TAG);
 
+    num_classes++;
 
-#if 0 /* old code just wanted to save it for a bit */
+    next_class = atomic_load(&(first_class->fl_next));
 
-    /** 
-     * Iterates through the LFSLL of H5P_mt_prop_t (properites), to find the correct
-     * location to insert the new property. chksum is used to determine insert location
-     * by increasing value. 
-     * 
-     * If there is a chksum collision then property names in lexicographical order. 
-     * 
-     * If there again is a collision with names, then version number is used in 
-     * decreasing order (newest version (higher number) first, oldest version last).
-     */
-    while (!done)
+    second_class = next_class.ptr;
+    assert(second_class);
+    assert(second_class->tag == H5P_MT_CLASS_TAG);
+
+    /* Iterate through the free list of classes to get the tail class */
+    while ( second_class )
     {
-        prev_prop == class->pl_head;
-        assert(prev_prop->sentinel);
+        first_class  = second_class;
+        next_class   = atomic_load(&(second_class->fl_next));
+        second_class = next_class.ptr;
+
+        assert(first_class);
+        assert(first_class->tag == H5P_MT_CLASS_TAG);
+
+        num_classes++;
+    } 
+
+    parent = first_class->parent_ptr;
+    assert(parent);
+    assert(parent->tag == H5P_MT_CLASS_TAG);
+
+    while ( parent )
+    {
+        ref_count = atomic_load(&(first_class->ref_count));
         
-        atomic_store(&(curr_prop), prev_prop->next.ptr);
-        assert(prev_prop != curr_prop);
-        assert(curr_prop->tag == H5P_MT_PROP_TAG);
+        assert(ref_count.pl  == 0);
+        assert(ref_count.plc == 0);
 
-        if ( curr_prop->chksum > new_prop->chksum )
+        thrd = atomic_load(&(first_class->thrd));
+        
+        assert(thrd.count == 0);
+        assert(thrd.opening == FALSE);
+        assert(thrd.closing == FALSE);
+
+        closing_thrd = thrd;
+        closing_thrd.closing = TRUE;
+
+        if ( ! atomic_compare_exchange_strong(&(first_class->thrd), 
+                                               &thrd, closing_thrd))
         {
-            /* prep new_prop to be inserted between prev_prop and curr_prop */
-            atomic_store(&(new_prop->next.ptr), curr_prop);
-            
-            /** Attempt to atomically insert new_prop 
-             * 
-             * NOTE: If this fails, another thread modified the LFSLL and we must 
-             * update stats and restart to ensure new_prop is correctly inserted.
-             */
-            if ( !atomic_compare_exchange_strong(&(prev_prop->next.ptr), 
-                                                 &curr_prop, new_prop) )
-            {
-                /* update stats */
-                /* num_insert_prop_class_cols */
-
-                continue;
-            }
-            /* The attempt was successful. Update lengths and stats */
-            else
-            {
-                atomic_fetch_add(&(class->log_pl_len), 1);
-                atomic_fetch_add(&(class->phys_pl_len), 1);
-
-                done = TRUE;
-
-                /* update stats */
-                /* num_insert_prop_class_success */
-            }
+            fprintf(stderr, "\nUpdating class thrd struct for freeing failed.");
         }
-        else if ( curr_prop->chksum == new_prop->chksum )
+        else
         {
-            int32_t        cmp_result;
-            H5P_mt_prop_t *next_prop;
-            bool           str_cmp_done = FALSE;
+            first_class->tag = H5P_MT_CLASS_INVALID_TAG;
 
-            while ( ! str_cmp_done )
-            { 
+            while (first_class->pl_head)
+            {
+                first_prop = first_class->pl_head;
+                assert(first_prop);
+                assert(first_prop->tag == H5P_MT_PROP_TAG);
+
+                next_prop = atomic_load(&(first_prop->next));
+                second_prop = next_prop.ptr;
+
+                first_class->pl_head = second_prop;
+
+                first_prop->tag = H5P_MT_PROP_INVALID_TAG;
+
+                first_prop->name = NULL;
+
+                atomic_store(&(first_prop->next), nulls_prop_ptr);
+                atomic_store(&(first_prop->value), nulls_value);               
+
+                free(first_prop);
+
                 /* update stats */
-                /* num_insert_prop_class_chksum_cols */
+                /* num_prop_structs_freed */
 
-                cmp_result = strcmp(curr_prop->name, new_prop->name);
+                atomic_fetch_sub(&(first_class->log_pl_len), 1);
+                atomic_fetch_sub(&(first_class->phys_pl_len), 1);
 
-                /* new_prop is less than curr_prop lexicographically */
-                if ( cmp_result > 0 )
-                {
-                    /* prep new_prop to insert between prev_prop and curr_prop */
-                    atomic_store(&(new_prop->next.ptr), curr_prop);
+            }
 
-                    /** Attempt to atomically insert new_prop 
-                     * 
-                     * NOTE: If this fails, another thread modified the LFSLL and we must 
-                     * update stats and restart to ensure new_prop is correctly inserted.
-                    */
-                    if ( !atomic_compare_exchange_strong(&(prev_prop->next.ptr), 
-                                                         &curr_prop, new_prop) )
-                    {
-                        /* update stats */
-                        /* num_insert_prop_class_cols */
+            next_class = atomic_load(&(first_class->fl_next));
+            assert( ! next_class.ptr );
 
-                        break;
+            first_class->name = NULL;
+            
+            atomic_store(&(first_class->id), null_id);
 
-                    }
-                    /* The attempt was successful. Update lengths and stats */
-                    else 
-                    {
-                        atomic_fetch_add(&(class->log_pl_len), 1);
-                        atomic_fetch_add(&(class->phys_pl_len), 1);
+            atomic_store(&(first_class->fl_next), nulls_class_ptr);
+            atomic_store(&(first_class->parent_ptr), NULL);
 
-                        done = TRUE;
-                        str_cmp_done = TRUE;
+            free(first_class);
 
-                        /* update stats */
-                        /* num_insert_prop_class_success */
-                    }
-                }
-                else if ( cmp_result < 0 )
-                {
+            num_classes_freed++;
 
-                    atomic_store(&(next_prop), curr_prop->next.ptr);
+            /* Decrement parent ref_counts */
+            ref_count = atomic_load(&(parent->ref_count));
+            ref_count.plc--;
 
-                    assert(next_prop->chksum >= curr_prop->chksum);
+            atomic_store(&(parent->ref_count), ref_count);
 
-                    /** 
-                     * If the next property in the LFSLL doesn't have the same chksum,
-                     * then new_prop gets inserted between curr_prop and new_prop since
-                     * chksum is used to sort first.
-                     */
-                    if ( next_prop->chksum != curr_prop->chksum )
-                    {
-                        /* Prep new_prop to be inserted between curr_prop and next_prop */
-                        atomic_store(&(new_prop->next.ptr), next_prop);
-
-                        /** Attempt to atomically insert new_prop 
-                         * 
-                         * NOTE: If this fails, another thread modified the LFSLL and we must 
-                         * update stats and restart to ensure new_prop is correctly inserted.
-                        */
-                        if ( !atomic_compare_exchange_strong(&(curr_prop->next.ptr), 
-                                                            &next_prop, new_prop) )
-                        {
-                            /* update stats */
-                            /* num_insert_prop_class_success */
-
-                            break;
-
-                        }
-                        /* The attempt was successful. Update lengths and stats */
-                        else
-                        {
-                            atomic_fetch_add(&(class->log_pl_len), 1);
-                            atomic_fetch_add(&(class->phys_pl_len), 1);
-
-                            done = TRUE;
-                            str_cmp_done = TRUE;
-
-                            /* update stats */
-                            /* num_insert_prop_class_success */
-                        }
-                    } /* end if ( next_prop->chksum != curr_prop->chksum ) */
-  
-                } 
-                else /* cmp_results == 0 */
-                {
-                    /* update stats */
-                    /* num_insert_prop_class_string_cols */
-
-                    /**
-                     * If the name's of curr_prop and new_prop are the same, we must
-                     * move on to using version number to determine insert location.
-                     */
-                    if ( new_prop->create_version > curr_prop->create_version )
-                    {
-                        atomic_store(&(new_prop->next.ptr), curr_prop);
-
-                        if ( !atomic_compare_exchange_strong(&(prev_prop->next.ptr), 
-                                                             &curr_prop, new_prop) )
-                        {
-                            /* update stats */
-                            /* num_insert_prop_class_cols */
-
-                            break;
-                        }
-                        /* The attempt was successful. Update lengths and stats */
-                        else 
-                        {
-                            atomic_fetch_add(&(class->log_pl_len), 1);
-                            atomic_fetch_add(&(class->phys_pl_len), 1);
-
-                            done = TRUE;
-                            str_cmp_done = TRUE;
-
-                            /* update stats */
-                            /* num_insert_prop_class_success */
-                        }
-                        
-                    } /* end if ( new_prop->create_version > curr_prop->create_version ) */
-                    else
-                    {
-                        /* Property is already in the LFSLL, update stats and exit */
-                        if ( new_prop->create_version == curr_prop->create_version )
-                        {
-                            /* update stats */
-                            /* num_insert_prop_class_alread_in_LFSLL */
-                            
-                            done = TRUE;
-                            str_cmp_done = TRUE;
-
-                            break;
-                        }
-                        
-                        atomic_store(&(next_prop), curr_prop->next.ptr);
-
-                        assert(next_prop->chksum >= curr_prop->chksum);
-
-                        if ( new_prop->chksum != next_prop->chksum )
-                        {
-                            /* Prep new_prop to be inserted between curr_prop and next_prop */
-                            atomic_store(&(new_prop->next.ptr), next_prop);
-
-                            /** Attempt to atomically insert new_prop 
-                             * 
-                             * NOTE: If this fails, another thread modified the LFSLL and we must 
-                             * update stats and restart to ensure new_prop is correctly inserted.
-                            */
-                            if ( !atomic_compare_exchange_strong(&(curr_prop->next.ptr), 
-                                                                &next_prop, new_prop) )
-                            {
-                                /* update stats */
-                                /* num_insert_prop_class_success */
-
-                                break;
-
-                            }
-                            /* The attempt was successful. Update lengths and stats */
-                            else
-                            {
-                                atomic_fetch_add(&(class->log_pl_len), 1);
-                                atomic_fetch_add(&(class->phys_pl_len), 1);
-
-                                done = TRUE;
-                                str_cmp_done = TRUE;
-
-                                /* update stats */
-                                /* num_insert_prop_class_success */
-                            }
-                        } /* end if ( new_prop->chksum != next_prop->chksum ) */
-
-                    } /* end else */
-
-                } /* end else ( cmp_results == 0 ) */ 
-
-                /** 
-                 * Must update prev_prop and curr_prop to compare next_prop
-                 * with new_prop to find the correct insert location.
-                 */
-                atomic_store(&(prev_prop), curr_prop);
-                atomic_store(&(curr_prop), next_prop);
-
-
-            } /* end while ( ! str_cmp_done ) */
+            /* Update pointers to free the next class on the free list */
+            first_class = parent;
+            parent = atomic_load(&(first_class->parent_ptr));
             
 
-        } /* end else if ( curr_prop->chksum == new_prop->chksum ) */
-    
-    } /* end while (!done) */
+        }
+    } /* end while ( parent ) */
 
-#endif
+    return(ret_value);
 
-#endif
+} /* H5P__clear_mt_class() */
+
+
+
+//#endif
