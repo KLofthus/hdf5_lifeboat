@@ -47,7 +47,7 @@
 
 
 /* Structures for Properties */
-
+ 
 typedef struct H5P_mt_prop_t H5P_mt_prop_t; /* Forward declaration */
 
 /****************************************************************************************
@@ -284,6 +284,7 @@ typedef struct H5P_mt_prop_t
 
     /* Callbacks are currently left out for early testing */
 
+    
 } H5P_mt_prop_t;
 
 
@@ -604,7 +605,7 @@ typedef struct H5P_mt_class_sptr_t
  *      inserted in the index, thus before it's visible to other threads, and doesn't
  *      change for the life of this instance.
  * 
- * id (_Atomic hid_t *):
+ * id (_Atomic hid_t):
  *      Atomic instance of hid_t used to store the id assigned to this property list
  *      class in the index. This field is atomic, as it can't be set until after the
  *      instance of H5P_mt_class_t is registered, and thus visible to other threads.
@@ -736,7 +737,7 @@ typedef struct H5P_mt_class_t
 
     /* Fields related to this class */
     const char       * name;
-    _Atomic hid_t    * id;
+    _Atomic hid_t      id;
     H5P_plist_type_t   type;
     _Atomic uint64_t   curr_version;
     _Atomic uint64_t   next_version;
@@ -757,36 +758,57 @@ typedef struct H5P_mt_class_t
     _Atomic H5P_mt_class_sptr_t          fl_next;
 
     /* Stats */
-    _Atomic uint64_t H5P_mt_class_num_classes_derived;
 
-    _Atomic uint64_t H5P_mt_class_num_thrd_count_update_cols;
-    _Atomic uint64_t H5P_mt_class_num_thrd_count_update;
-    _Atomic uint64_t H5P_mt_class_num_thrd_closing_flag_set;
-    _Atomic uint64_t H5P_mt_class_num_thrd_opening_flag_set;
+    /* H5P_mt_class_t comparison stats */
+    _Atomic uint64_t class_max_derived_classes;
+    _Atomic uint64_t class_max_version_number;
+    _Atomic uint64_t class_max_num_phys_props;
+    _Atomic uint64_t class_max_num_log_props;
+    _Atomic uint64_t class_insert_total_nodes_visited;
+    _Atomic uint64_t class_delete_total_nodes_visited;
+    _Atomic uint64_t class_insert_max_nodes_visited;
+    _Atomic uint64_t class_delete_max_nodes_visited;
 
-    _Atomic uint64_t H5P_mt_class_num_class_ref_count_cols;
-    _Atomic uint64_t H5P_mt_class_num_class_ref_count_update;
+    /* H5P_mt_active_thread_count_t stats */
+    _Atomic uint64_t class_num_thrd_count_update_cols;
+    _Atomic uint64_t class_num_thrd_count_update;
+    _Atomic uint64_t class_num_thrd_closing_flag_set;
+    _Atomic uint64_t class_num_thrd_opening_flag_set;
 
-    _Atomic uint64_t H5P_mt_class_num_class_fl_insert_cols;
-    _Atomic uint64_t H5P_mt_class_num_class_fl_insert;
+    /* H5P_mt_class_ref_counts_t stats */
+    _Atomic uint64_t class_num_ref_count_cols;
+    _Atomic uint64_t class_num_ref_count_update;
 
-    _Atomic uint64_t H5P_mt_class_num_insert_prop_cols;
-    _Atomic uint64_t H5P_mt_class_num_insert_prop_success;
-    _Atomic uint64_t H5P_mt_class_insert_nodes_visited;
-    
-    _Atomic uint64_t H5P_mt_class_num_delete_prop_nonexistant;
-    _Atomic uint64_t H5P_mt_class_num_prop_delete_version_set;
+    /* H5P_mt_class_sptr_t (free list) stats */
+    _Atomic uint64_t class_num_class_fl_insert_cols;
+    _Atomic uint64_t class_num_class_fl_insert;
 
-    _Atomic uint64_t H5P_mt_class_num_prop_chksum_cols;
-    _Atomic uint64_t H5P_mt_class_num_prop_name_cols;
-    
+    /* H5P__insert_prop_class() function stats */
+    _Atomic uint64_t class_num_insert_prop_cols;
+    _Atomic uint64_t class_num_insert_prop_success;
+    _Atomic uint64_t class_insert_nodes_visited;
     _Atomic uint64_t H5P__insert_prop_class__num_calls;
+    
+    /* H5P__delete_prop_class() function stats */
+    _Atomic uint64_t class_delete_nodes_visited;
+    _Atomic uint64_t class_num_delete_prop_nonexistant;
+    _Atomic uint64_t class_num_prop_delete_version_set;
     _Atomic uint64_t H5P__delete_prop_class__num_calls;
+
+    /* H5P__find_mod_point() function stats */
+    _Atomic uint64_t class_num_prop_chksum_cols;
+    _Atomic uint64_t class_num_prop_name_cols;
     _Atomic uint64_t H5P__find_mod_point__num_calls;
     
+    /* H5P__create_prop() function stats */
+    _Atomic uint64_t class_num_prop_created;
     _Atomic uint64_t H5P__create_prop__num_calls;
 
-    _Atomic uint64_t H5P_mt_prop_num_prop_created;
+    /* H5P_mt_prop_t stats */
+    _Atomic uint64_t class_num_props_modified;
+    _Atomic uint64_t class_max_num_prop_modified;
+    _Atomic uint64_t class_num_prop_freed;
+
 
 } H5P_mt_class_t;
 
