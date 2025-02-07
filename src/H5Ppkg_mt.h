@@ -374,6 +374,10 @@ typedef struct H5P_mt_active_thread_count_t
     bool        opening;
     bool        closing;
 
+    uint32_t    dummy_int_1;
+    bool        dummy_bool_1;
+    bool        dummy_bool_2;
+
 } H5P_mt_active_thread_count_t;
 
 
@@ -435,6 +439,10 @@ typedef struct H5P_mt_class_ref_counts_t
     uint64_t pl;
     uint32_t plc;
     bool     deleted;
+
+    bool     dummy_bool_1;
+    bool     dummy_bool_2;
+    bool     dummy_bool_3;
 
 } H5P_mt_class_ref_counts_t;
 
@@ -780,10 +788,10 @@ typedef struct H5P_mt_class_t
     _Atomic uint64_t list_max_num_props_modified;
 
     /* H5P_mt_active_thread_count_t stats */
-    _Atomic uint64_t class_num_thrd_count_update_cols;
-    _Atomic uint64_t class_num_thrd_count_update;
-    _Atomic uint64_t class_num_thrd_closing_flag_set;
-    _Atomic uint64_t class_num_thrd_opening_flag_set;
+    _Atomic uint64_t num_thrd_count_update_cols;
+    _Atomic uint64_t num_thrd_count_update;
+    _Atomic uint64_t num_thrd_closing_flag_set;
+    _Atomic uint64_t num_thrd_opening_flag_set;
 
     /* H5P_mt_class_ref_counts_t stats */
     _Atomic uint64_t class_num_ref_count_cols;
@@ -1279,10 +1287,10 @@ typedef struct H5P_mt_list_t
     _Atomic uint64_t list_wait_for_curr_version_to_inc;
 
     /* H5P_mt_active_thread_count_t stats */
-    _Atomic uint64_t list_num_thrd_count_update_cols;
-    _Atomic uint64_t list_num_thrd_count_update;
-    _Atomic uint64_t list_num_thrd_closing_flag_set;
-    _Atomic uint64_t list_num_thrd_opening_flag_set;
+    _Atomic uint64_t num_thrd_count_update_cols;
+    _Atomic uint64_t num_thrd_count_update;
+    _Atomic uint64_t num_thrd_closing_flag_set;
+    _Atomic uint64_t num_thrd_opening_flag_set;
 
     /* H5P__insert_prop_list() function stats */
     _Atomic uint64_t list_num_insert_prop_cols;

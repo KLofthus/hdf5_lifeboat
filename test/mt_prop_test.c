@@ -124,13 +124,13 @@ void simple_test_1(void)
     assert( 2 == phys_pl_len);
 
 
-    printf("  testing insert_prop_class\n");
+    printf("  testing insert_prop in a class\n");
 
     new_prop_name = "prop_1";
     value_ptr = "This is the value for prop_1.";
     value_size = sizeof(value_ptr);
 
-    H5P__insert_prop_class(new_class, new_prop_name, value_ptr, value_size);
+    H5P__insert_prop_setup(new_class, new_prop_name, value_ptr, value_size);
 
     curr_version = atomic_load(&(new_class->curr_version));
     assert( 2 == curr_version);
@@ -152,9 +152,9 @@ void simple_test_1(void)
     assert( ! target_prop->sentinel);
 
 
-    printf("  testing insert_prop_class (with a prop of same name)\n");
+    printf("  testing insert_prop in a class (with a prop of same name)\n");
 
-    H5P__insert_prop_class(new_class, new_prop_name, value_ptr, value_size);
+    H5P__insert_prop_setup(new_class, new_prop_name, value_ptr, value_size);
     curr_version = atomic_load(&(new_class->curr_version));
     assert( 3 == curr_version);
 
@@ -226,13 +226,13 @@ void simple_test_1(void)
     assert(second_prop->sentinel);
 
 
-    printf("  testing insert_prop_list\n");
+    printf("  testing insert_prop in a list\n");
 
     new_prop_name = "prop_2";
     value_ptr = "This is the value for prop_2.";
     value_size = sizeof(value_ptr);
 
-    H5P__insert_prop_list(new_list, new_prop_name, value_ptr, value_size);
+    H5P__insert_prop_setup(new_list, new_prop_name, value_ptr, value_size);
 
     curr_version = atomic_load(&(new_list->curr_version));
     assert( 2 == curr_version);
@@ -250,9 +250,9 @@ void simple_test_1(void)
     assert( 2 == (atomic_load(&(new_list->nprops))));
 
 
-    printf("  testing delete_prop_class\n");
+    printf("  testing set_delete_version in a class\n");
 
-    H5P__delete_prop_class(new_class, target_prop);
+    H5P__set_delete_version(new_class, target_prop);
 
     curr_version = atomic_load(&(new_class->curr_version));
     assert( 4 == curr_version);
@@ -268,9 +268,9 @@ void simple_test_1(void)
     assert( 4 == (atomic_load(&(target_prop->delete_version))));
 
 
-    printf("  testing delete_prop_list (in lkup_tbl)\n");
+    printf("  testing set_delete_version in a list's lkup_tbl\n");
 
-    H5P__delete_prop_list(new_list, target_prop);
+    H5P__set_delete_version(new_list, target_prop);
 
     curr_version = atomic_load(&(new_list->curr_version));
     assert( 3 == curr_version);
@@ -287,7 +287,7 @@ void simple_test_1(void)
     assert( 3 == (atomic_load(&(tbl_entry->base_delete_version))));
 
 
-    printf("  testing delete_prop_list (in LFSLL)\n");
+    printf("  testing set_delete_version in a list's LFSLL\n");
 
     first_prop  = new_list->pl_head;
     next_ptr    = atomic_load(&(first_prop->next));
@@ -295,7 +295,7 @@ void simple_test_1(void)
 
     assert(second_prop->name == "prop_2");
 
-    H5P__delete_prop_list(new_list, second_prop);
+    H5P__set_delete_version(new_list, second_prop);
 
     curr_version = atomic_load(&(new_list->curr_version));
     assert( 4 == curr_version);
@@ -384,8 +384,9 @@ void serial_create_class_test(void)
      * Manually sets att_class's thrd.opening to TRUE to ensure that condition is
      * triggered and and that a new class can't be created until opening is completed.
      */
+    printf("  testing create_class when openining flag is set\n");
 
-    assert( 0 == (atomic_load(&(att_class->class_num_thrd_opening_flag_set))) );
+    assert( 0 == (atomic_load(&(att_class->num_thrd_opening_flag_set))) );
 
     thrd = atomic_load(&(att_class->thrd));
 
@@ -399,7 +400,7 @@ void serial_create_class_test(void)
                                        H5P_TYPE_GROUP_ACCESS);
 
     assert( group_class == NULL );
-    assert( 1 == (atomic_load(&(att_class->class_num_thrd_opening_flag_set))) );
+    assert( 1 == (atomic_load(&(att_class->num_thrd_opening_flag_set))) );
 
     /* Manually set thrd.opening back to FALSE */
     thrd = atomic_load(&(att_class->thrd));
@@ -417,8 +418,10 @@ void serial_create_class_test(void)
      * 
      * *** Will print and error message to terminal ***
      */
+    printf("  testing create_class when closing flag is set\n");
 
-    assert( 0 == (atomic_load(&(att_class->class_num_thrd_closing_flag_set))) );
+
+    assert( 0 == (atomic_load(&(att_class->num_thrd_closing_flag_set))) );
 
     thrd = atomic_load(&(att_class->thrd));
 
@@ -430,7 +433,7 @@ void serial_create_class_test(void)
                                        H5P_TYPE_GROUP_ACCESS);
 
     assert( group_class == NULL );
-    assert( 1 == (atomic_load(&(att_class->class_num_thrd_closing_flag_set))) );
+    assert( 1 == (atomic_load(&(att_class->num_thrd_closing_flag_set))) );
 
     /* Manually set thrd.closing back to FALSE */
     thrd = atomic_load(&(att_class->thrd));
@@ -447,11 +450,13 @@ void serial_create_class_test(void)
      * but doing several inserts to put more properties att_class, and deleting a couple
      * of them, and doing a few insert calls that are 'modifications' to existing props. 
      */
+    printf("  testing create_class only copies the correct properties\n");
+
 
     /* Inserts 10 new properties */
     for ( int i = 0; i < 10; i++ )
     {
-        char prop_name[MAX_PROP_NAME_LEN];
+        prop_name = malloc(MAX_PROP_NAME_LEN);
 
         snprintf(prop_name, MAX_PROP_NAME_LEN, "prop_%d", i);
 
@@ -464,16 +469,32 @@ void serial_create_class_test(void)
 
         snprintf(value_str, value_size, "This is the value for %s.", prop_name);
 
-        value_ptr = (void *)value_str;
-
-        H5P__insert_prop_class(att_class, prop_name, value_ptr, value_size);
+        H5P__insert_prop_setup(att_class, prop_name, (void *)value_str, value_size);
 
     }
+    printf("    properties inserted\n");
 
-    /* Gets the version of the class we want to derive a new class from */
-    curr_version = atomic_load(&(att_class->curr_version));
+
+    /* Sets a delete version of a property */
+    first_prop = att_class->pl_head;
+    next_ptr = atomic_load(&(first_prop->next));
+    second_prop = atomic_load(&(next_ptr.ptr));
+
+    for ( int i = 0; i < 3; i++ )
+    {
+        first_prop = second_prop;
+        next_ptr = atomic_load(&(first_prop->next));
+        second_prop = atomic_load(&(next_ptr.ptr));
+    }
+
+    H5P__set_delete_version(att_class, second_prop);
+
+    printf("    delete_version set\n");
+
+
 
     /* 'Modifies' a property */
+
     first_prop = att_class->pl_head;
     next_ptr = atomic_load(&(first_prop->next));
     second_prop = atomic_load(&(next_ptr.ptr));
@@ -491,10 +512,46 @@ void serial_create_class_test(void)
 
     value_ptr = (void *)value_str;
 
-    H5P__insert_prop_class(att_class, prop_name, value_ptr, value_size);
+    H5P__insert_prop_setup(att_class, prop_name, value_ptr, value_size);
+
+    printf("    modified property\n");
+
+
+
+    /* Gets the version of the class we want to derive a new class from */
+
+    curr_version = atomic_load(&(att_class->curr_version));
+
+
+
+    /* 'Modifies' a second property */
+
+    next_ptr = atomic_load(&(second_prop->next));
+    first_prop = atomic_load(&(next_ptr.ptr));
+
+    prop_name = first_prop->name;
+    value_size = snprintf(NULL, 0, "This is the value for %s, modified.", 
+                          prop_name) + 1;
+    value_str = malloc(value_size);
+    if ( ! value_str )
+    {
+        fprintf(stderr, "Failed to allocate memory for value");
+    }
+    snprintf(value_str, value_size, "This is the value for %s, modified.", 
+             prop_name);
+
+    value_ptr = (void *)value_str;
+
+    H5P__insert_prop_setup(att_class, prop_name, value_ptr, value_size);
+
+    printf("    modified second property\n");
 
 
     /* Sets a delete version of a property */
+
+    first_prop = att_class->pl_head;
+    next_ptr = atomic_load(&(first_prop->next));
+    second_prop = atomic_load(&(next_ptr.ptr));
 
     for ( int i = 0; i < 6; i++ )
     {
@@ -503,10 +560,40 @@ void serial_create_class_test(void)
         second_prop = atomic_load(&(next_ptr.ptr));
     }
 
-    H5P__delete_prop_class(att_class, second_prop);
+    H5P__set_delete_version(att_class, second_prop);
+
+    printf("    second delete_version set\n");
 
 
-    /* Creates a new class from the version before the modification and deletion */
+#if 0
+    first_prop = att_class->pl_head;
+    next_ptr = atomic_load(&(first_prop->next));
+    
+    while ( first_prop )
+    {
+        prop_value = atomic_load(&(first_prop->value));
+        value_str = (char *)prop_value.ptr;
+
+        printf("\nProp chksum: %lld,\nProp name: %s,\nProp value: %s,\ncreate_ver: %lld,\ndelete_ver: %lld\n", 
+              (unsigned long long)first_prop->chksum,
+               first_prop->name,
+               value_str,
+              (unsigned long long)(atomic_load(&(first_prop->create_version))),
+              (unsigned long long)(atomic_load(&(first_prop->delete_version))) );
+
+        
+            first_prop = next_ptr.ptr;
+            if ( first_prop )
+                next_ptr = atomic_load(&(first_prop->next));
+    }
+#endif
+    
+
+
+    /**
+     * Creates a new class from the version after one delete_version was set but before
+     * the modification and second delete_version was set.
+     */
 
     group_class = H5P__mt_create_class(att_class, curr_version, new_class_name,
                                        H5P_TYPE_GROUP_ACCESS);
@@ -516,10 +603,10 @@ void serial_create_class_test(void)
 
     /* Checks that the lengths are what they should be */
     phys_pl_len = atomic_load(&(group_class->phys_pl_len));    
-    assert(phys_pl_len == 12);
+    assert(phys_pl_len == 11);
 
     log_pl_len = atomic_load(&(group_class->log_pl_len));
-    assert(log_pl_len == 10);
+    assert(log_pl_len == 9);
 
     first_prop = group_class->pl_head;
     assert(first_prop);
@@ -545,21 +632,60 @@ void serial_create_class_test(void)
 
         char prop_name[MAX_PROP_NAME_LEN];
 
-        snprintf(prop_name, MAX_PROP_NAME_LEN, "prop_%d", i);
-
-        value_size = snprintf(NULL, 0, "This is the value for %s.", prop_name) + 1;
-        test_value_str = malloc(value_size);
-        if ( ! test_value_str )
+        if ( i == 0 )
         {
-            fprintf(stderr, "Failed to allocate memory for test value");
+            snprintf(prop_name, MAX_PROP_NAME_LEN, "prop_%d", i);
+
+            value_size = snprintf(NULL, 0, "This is the value for %s, modified.", prop_name) + 1;
+            test_value_str = malloc(value_size);
+            if ( ! test_value_str )
+            {
+                fprintf(stderr, "Failed to allocate memory for test value");
+            }
+
+            snprintf(test_value_str, value_size, "This is the value for %s, modified.", prop_name);
+
+            //printf("%s\n", value_str);
+            //printf("%s\n", test_value_str);
+
+            assert( 0 == strcmp(value_str, test_value_str) );
         }
+        else if ( i >= 3 )
+        {
+            snprintf(prop_name, MAX_PROP_NAME_LEN, "prop_%d", (i + 1) );
 
-        snprintf(test_value_str, value_size, "This is the value for %s.", prop_name);
+            value_size = snprintf(NULL, 0, "This is the value for %s.", prop_name) + 1;
+            test_value_str = malloc(value_size);
+            if ( ! test_value_str )
+            {
+                fprintf(stderr, "Failed to allocate memory for test value");
+            }
 
-        //printf("%s\n", value_str);
-        //printf("%s\n", test_value_str);
+            snprintf(test_value_str, value_size, "This is the value for %s.", prop_name);
 
-        assert( 0 == strcmp(value_str, test_value_str) );
+            //printf("%s\n", value_str);
+            //printf("%s\n", test_value_str);
+
+            assert( 0 == strcmp(value_str, test_value_str) );
+        }
+        else
+        {
+            snprintf(prop_name, MAX_PROP_NAME_LEN, "prop_%d", i);
+
+            value_size = snprintf(NULL, 0, "This is the value for %s.", prop_name) + 1;
+            test_value_str = malloc(value_size);
+            if ( ! test_value_str )
+            {
+                fprintf(stderr, "Failed to allocate memory for test value");
+            }
+
+            snprintf(test_value_str, value_size, "This is the value for %s.", prop_name);
+
+            //printf("%s\n", value_str);
+            //printf("%s\n", test_value_str);
+
+            assert( 0 == strcmp(value_str, test_value_str) );
+        }
 
         first_prop = second_prop;
         next_ptr = atomic_load(&(first_prop->next));
@@ -599,7 +725,7 @@ void serial_calc_checksum_test(void)
 
 
 
-    printf("\nMT PROP serial_create_class_test\n");
+    //printf("\nMT PROP serial_create_class_test\n");
 
 
     /* Initializes the root class which is needed as a base for H5P_mt */
