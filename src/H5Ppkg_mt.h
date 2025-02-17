@@ -88,7 +88,7 @@ typedef struct H5P_mt_prop_aptr_t
 {
     H5P_mt_prop_t * ptr;
 
-    hbool_t         deleted;
+    bool         deleted;
 
     bool            dummy_bool_1;
     bool            dummy_bool_2;
@@ -353,6 +353,11 @@ typedef struct H5P_mt_prop_t
  * the host structure – either throwing an error or waiting until the thread count drops 
  * to zero as appropriate.
  * 
+ * With padding, this structure is 128 bits, which allows true atomic operation on
+ * many (most?) modern CPUs. However, it this becomes a problem, we can obtain the
+ * same effect by stealing the low order bit of the pointer for a deleted bit -- which
+ * works on all CPU / C compiler combinations I have tried.
+ * 
  * Fields:
  * 
  * count (uint64_t):
@@ -365,6 +370,11 @@ typedef struct H5P_mt_prop_t
  * 
  * closing (bool):
  *      Boolean flag that is set to TRUE iff the host structure is about to be discarded.
+ * 
+ * dummy_int_1:
+ * dummy_bool_1:
+ * dummy_bool_2: The dummy_int and dummy_bool fields exist to pad 
+ *               H5P_mt_active_thread_count_t out to 128 bits.
  * 
  ****************************************************************************************
  */
@@ -417,6 +427,11 @@ typedef struct H5P_mt_active_thread_count_t
  * below. Observe that the size of the structure is less that 128 bits, which should
  * allow true atomic operation on most modern machines. 
  * 
+ * With padding, this structure is 128 bits, which allows true atomic operation on
+ * many (most?) modern CPUs. However, it this becomes a problem, we can obtain the
+ * same effect by stealing the low order bit of the pointer for a deleted bit -- which
+ * works on all CPU / C compiler combinations I have tried.
+ * 
  * Fields:
  * 
  * pl (uint64_t):
@@ -431,6 +446,10 @@ typedef struct H5P_mt_active_thread_count_t
  *      Boolean flag indicating whether this property list class has been deleted from 
  *      the index. This field is set to FALSE on creation, and set to TRUE when the 
  *      reference count on the property list class in the index drops to zero.
+ * 
+ * dummy_bool_1:
+ * dummy_bool_2:
+ * dummy_bool_3: The dummy_bool fields exist to pad H5P_mt_prop_aptr_t out to 128 bits  
  * 
  ****************************************************************************************
  */
@@ -728,7 +747,24 @@ typedef struct H5P_mt_class_sptr_t
  *      H5P_mt_class_t.
  * 
  * 
+ * 
  * Statistics Fields:
+ * 
+ * Insert statistics:
+ * 
+ * H5P__insert_prop_setup__num_calls (_Atomic uint64_t):
+ *      Tracks the number of H5P__insert_prop_setup() function calls have occured. Can 
+ *      also be used in compination with H5P__mt_create_class() to track the number of
+ *      times H5P__mt_insert_prop() and H5P__mt_create_prop were called.
+ * 
+ * insert_max_nodes_visited (_Atomic uint64_t):
+ *      Keeps track of the largest number of nodes visited in the LFSLL of a class during 
+ *      an insert.
+ * 
+ * insert_avg_nodes_visited (_Atomic uint64_t):
+ *      This field tracks the the average number of nodes visited in the LFSLL of a class
+ *      across all inserts. Fields H5P__insert_prop_setup_num_calls and 
+ *      num_insert_node_visited are needed to calculate the avg_nodes_visited.
  *  
  ****************************************************************************************
  */
@@ -768,24 +804,33 @@ typedef struct H5P_mt_class_t
 
     /* Stats */
 
-    /* H5P_mt_class_t comparison stats */
-    _Atomic uint64_t class_max_derived_classes;
-    _Atomic uint64_t class_max_version_number;
-    _Atomic uint64_t class_max_num_phys_props;
-    _Atomic uint64_t class_max_num_log_props;
+    /* H5P_mt_class_t insert stats */
+    _Atomic uint64_t H5P__insert_prop_setup__num_calls;
+    _Atomic uint64_t insert_max_nodes_visited;
+    _Atomic uint64_t insert_avg_nodes_visited;
+    _Atomic uint64_t num_insert_nodes_visited;
+    _Atomic uint64_t num_insert_prop_cols;
+    _Atomic uint64_t num_insert_prop_success;
+    _Atomic uint64_t num_insert_chksum_cols;
 
-    /* H5P_mt_class_t stats */
-    _Atomic uint64_t class_insert_total_nodes_visited;
-    _Atomic uint64_t class_delete_total_nodes_visited;
-    _Atomic uint64_t class_insert_max_nodes_visited;
-    _Atomic uint64_t class_delete_max_nodes_visited;
-    _Atomic uint64_t class_wait_for_curr_version_to_inc;
+    /* H5P_mt_class_t set delete version stats */
+    _Atomic uint64_t H5P__set_delete_version__num_calls;
+    _Atomic uint64_t set_delete_max_nodes_visited;
+    _Atomic uint64_t set_delete_avg_nodes_visited;
+    _Atomic uint64_t num_set_delete_nodes_visited;
+    _Atomic uint64_t num_set_delete_prop_cols;
+    _Atomic uint64_t num_set_delete_prop_success;
+    _Atomic uint64_t num_set_delete_chksum_cols;
 
-    /* H5P_mt_list_t stats */
-    _Atomic uint64_t list_max_version_number;
-    _Atomic uint64_t list_max_num_phys_props;
-    _Atomic uint64_t list_max_num_log_props;
-    _Atomic uint64_t list_max_num_props_modified;
+    /* H5P_mt_class_t search stats */
+    _Atomic uint64_t H5P__search_prop__num_calls;
+    _Atomic uint64_t search_max_nodes_visited;
+    _Atomic uint64_t search_avg_nodes_visited;
+    _Atomic uint64_t num_search_nodes_visited;
+    _Atomic uint64_t num_search_success;
+
+    /* Version check stats */
+    _Atomic uint64_t num_wait_for_curr_version_to_inc;
 
     /* H5P_mt_active_thread_count_t stats */
     _Atomic uint64_t num_thrd_count_update_cols;
@@ -794,48 +839,8 @@ typedef struct H5P_mt_class_t
     _Atomic uint64_t num_thrd_opening_flag_set;
 
     /* H5P_mt_class_ref_counts_t stats */
-    _Atomic uint64_t class_num_ref_count_cols;
-    _Atomic uint64_t class_num_ref_count_update;
-
-    /* H5P_mt_class_sptr_t (free list) stats */
-    _Atomic uint64_t class_num_class_fl_insert_cols;
-    _Atomic uint64_t class_num_class_fl_insert;
-
-    /* H5P__insert_prop_class() function stats */
-    _Atomic uint64_t class_num_insert_prop_cols;
-    _Atomic uint64_t class_num_insert_prop_success;
-    _Atomic uint64_t class_insert_nodes_visited;
-    _Atomic uint64_t H5P__insert_prop_class__num_calls;
-    
-    /* H5P__delete_prop_class() function stats */
-    _Atomic uint64_t class_num_delete_prop_cols;
-    _Atomic uint64_t class_delete_nodes_visited;
-    _Atomic uint64_t class_num_delete_prop_nonexistant;
-    _Atomic uint64_t class_num_prop_delete_version_set;
-    _Atomic uint64_t H5P__delete_prop_class__num_calls;
-
-    /* H5P__modify_prop_class() function stats */
-    _Atomic uint64_t class_num_modify_prop_cols;
-    _Atomic uint64_t class_num_modify_prop_success;
-    _Atomic uint64_t class_modify_nodes_visited;
-    _Atomic uint64_t H5P__modify_prop_class__num_calls;
-
-    /* H5P__find_mod_point() function stats */
-    _Atomic uint64_t class_num_prop_chksum_cols;
-    _Atomic uint64_t class_num_prop_name_cols;
-    _Atomic uint64_t H5P__find_mod_point__num_calls;
-    
-    /* H5P__create_prop() function stats */
-    _Atomic uint64_t class_num_prop_created;
-    _Atomic uint64_t H5P__create_prop__num_calls;
-
-    /* H5P_mt_prop_t stats */
-    _Atomic uint64_t class_num_props_modified;
-    _Atomic uint64_t class_max_num_prop_modified;
-    _Atomic uint64_t class_num_prop_freed;
-    _Atomic uint64_t class_prop_ref_count_cols;
-    _Atomic uint64_t class_prop_ref_count_update;
-
+    _Atomic uint64_t num_ref_count_cols;
+    _Atomic uint64_t num_ref_count_update;
 
 } H5P_mt_class_t;
 
@@ -1281,10 +1286,42 @@ typedef struct H5P_mt_list_t
     _Atomic H5P_mt_list_sptr_t           fl_next;
 
     /* stats */
-    _Atomic uint64_t list_lkup_tbl_entry_modified;
-    _Atomic uint64_t list_num_prop_freed;
-    _Atomic uint64_t list_num_props_modified;
-    _Atomic uint64_t list_wait_for_curr_version_to_inc;
+
+    /* H5P_mt_list_t insert stats */
+    _Atomic uint64_t H5P__insert_prop_setup__num_calls;
+    _Atomic uint64_t insert_max_nodes_visited;
+    _Atomic uint64_t insert_avg_nodes_visited;
+    _Atomic uint64_t num_insert_nodes_visited;
+    _Atomic uint64_t num_insert_prop_cols;
+    _Atomic uint64_t num_insert_prop_success;
+    _Atomic uint64_t num_insert_chksum_cols;
+    _Atomic uint64_t num_insert_update_entry_cols;
+    _Atomic uint64_t num_insert_update_entry_success;
+
+    /* H5P_mt_list_t set delete version stats */
+    _Atomic uint64_t H5P__set_delete_version__num_calls;
+    _Atomic uint64_t set_delete_max_nodes_visited;
+    _Atomic uint64_t set_delete_avg_nodes_visited;
+    _Atomic uint64_t num_set_delete_nodes_visited;
+    _Atomic uint64_t num_set_delete_prop_cols;
+    _Atomic uint64_t num_set_delete_prop_success;
+    _Atomic uint64_t num_set_delete_chksum_cols;
+    _Atomic uint64_t num_set_entry_base_delete_version;
+    _Atomic uint64_t num_set_delete_on_curr_entry;
+    _Atomic uint64_t num_set_delete_older_ver_than_curr;
+
+    /* H5P_mt_list_t search stats */
+    _Atomic uint64_t H5P__search_prop__num_calls;
+    _Atomic uint64_t search_max_nodes_visited;
+    _Atomic uint64_t search_avg_nodes_visited;
+    _Atomic uint64_t num_search_nodes_visited;
+    _Atomic uint64_t num_search_success;
+    _Atomic uint64_t num_search_tbl_found_base;
+    _Atomic uint64_t num_search_tbl_found_curr;
+    _Atomic uint64_t num_search_tbl_found_older_than_curr;
+
+    /* Version check stats */
+    _Atomic uint64_t num_wait_for_curr_version_to_inc;
 
     /* H5P_mt_active_thread_count_t stats */
     _Atomic uint64_t num_thrd_count_update_cols;
@@ -1292,33 +1329,53 @@ typedef struct H5P_mt_list_t
     _Atomic uint64_t num_thrd_closing_flag_set;
     _Atomic uint64_t num_thrd_opening_flag_set;
 
-    /* H5P__insert_prop_list() function stats */
-    _Atomic uint64_t list_num_insert_prop_cols;
-    _Atomic uint64_t list_num_insert_prop_success;
-    _Atomic uint64_t list_insert_nodes_visited;
-    _Atomic uint64_t list_update_tbl_entry_curr_cols;
-    _Atomic uint64_t list_update_tbl_entry_curr_success;
-    _Atomic uint64_t H5P__insert_prop_list__num_calls;
-
-    /* H5P__delete_prop_list() function stats */
-    _Atomic uint64_t list_delete_nodes_visited;
-    _Atomic uint64_t list_num_delete_prop_nonexistant;
-    _Atomic uint64_t list_num_prop_delete_version_set;
-    _Atomic uint64_t list_num_base_delete_version_set;
-    _Atomic uint64_t list_num_delete_older_version_than_curr;
-    _Atomic uint64_t H5P__delete_prop_list__num_calls;
-
-    /* H5P__find_mod_point() function stats */
-    _Atomic uint64_t list_num_prop_chksum_cols;
-    _Atomic uint64_t list_num_prop_name_cols;
-    _Atomic uint64_t H5P__find_mod_point__num_calls;
-
-    /* H5P__create_prop() function stats */
-    _Atomic uint64_t H5P__create_prop__num_calls;
-
-
-
 } H5P_mt_list_t;
+
+
+
+/**
+ * 
+ */
+typedef struct H5P_mt_t
+{
+    _Atomic H5P_mt_prop_aptr_t  prop_fl_head;
+    _Atomic H5P_mt_prop_aptr_t  prop_fl_tail;
+    _Atomic uint64_t            prop_fl_len;
+    
+    _Atomic H5P_mt_class_sptr_t class_fl_head;
+    _Atomic H5P_mt_class_sptr_t class_fl_tail;
+    _Atomic uint64_t            class_fl_len;
+
+    _Atomic H5P_mt_list_sptr_t  list_fl_head;
+    _Atomic H5P_mt_list_sptr_t  list_fl_tail;
+    _Atomic uint64_t            list_fl_len;
+
+    /* stats */
+
+    /* Free list stats */
+    _Atomic uint64_t prop_fl_head_update;
+    _Atomic uint64_t prop_fl_head_update_cols;
+    _Atomic uint64_t prop_fl_tail_update;
+    _Atomic uint64_t prop_fl_tail_update_cols;
+    _Atomic uint64_t prop_fl_next_update;
+    _Atomic uint64_t prop_fl_next_update_cols;
+    _Atomic uint64_t num_props_added_to_fl;
+
+    /* stats for the clear functions */
+    _Atomic uint64_t num_classes_freed;
+    _Atomic uint64_t num_lists_freed;
+    _Atomic uint64_t num_props_freed;
+
+    /* H5P_mt_class_t and H5P_mt_list_t comparison stats */
+    _Atomic uint64_t max_derived_classes;
+    _Atomic uint64_t max_derived_lists;
+    _Atomic uint64_t max_class_num_phys_props;
+    _Atomic uint64_t max_list_num_phys_props;
+    _Atomic uint64_t max_class_version_number;
+    _Atomic uint64_t max_list_version_number;
+
+
+} H5P_mt_t;
 
 
 
